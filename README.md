@@ -12,6 +12,8 @@ Host your own Rumbleverse server with rVclient.
 1. Download **`RVServer-Setup.zip`** from the [latest release](../../releases/latest) and extract it anywhere.
 2. Read `README.txt` inside, then double-click `Setup-RVServer.bat`.
 
+The same files are in the [`RVServer-Setup`](RVServer-Setup) folder of this repo.
+
 On a home internet connection setup always makes a **private** server - public community servers need a VPS or dedicated server.
 
 ## Good to know
