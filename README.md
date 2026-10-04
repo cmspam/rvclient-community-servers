@@ -231,6 +231,7 @@ sudo podman exec rvserver rv settings solo           # show a mode's settings
 sudo podman exec rvserver rv set solo SpawnBot 40    # change one (add --restart to apply now)
 sudo podman exec rvserver rv update                  # install the newest server kit
 sudo podman exec rvserver rv logs solo 100           # last lines of a log
+sudo podman exec rvserver rv leave                   # remove from the server list (before deleting)
 sudo podman exec rvserver rv help                    # every command
 ```
 
@@ -313,6 +314,7 @@ ports; open them in your provider's firewall too.
 **Linux:**
 
 ```sh
+sudo podman exec rvserver rv leave   # removes it from the server list (private servers: or Remove in the launcher)
 sudo systemctl stop rvserver; sudo rm -f /etc/containers/systemd/rvserver.container; sudo systemctl daemon-reload
 sudo podman rm -f rvserver
 sudo rm -rf /srv/rvserver          # deletes the server's files and registration

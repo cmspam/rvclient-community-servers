@@ -6,7 +6,7 @@ import { existsSync, statSync, openSync, readSync, closeSync, writeFileSync, rea
 import { join } from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
-import { INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, readJson, readState, isConfigured, kitVersion,
+import { INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, readJson, readState, updateState, isConfigured, kitVersion,
     readIni, setIniValues, gameProcesses } from './lib.mjs';
 
 export const CONTROL_SOCK = join(STATE_DIR, 'control.sock');
@@ -167,6 +167,21 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
 }
 
 export const node = () => admin('/node');
+
+// Remove this server from the rVclient backend (what the Windows Uninstall-RVServer does), stop
+// the game servers and forget the registration, so setup can register the folder again later.
+export async function leave() {
+    const st = readState();
+    if (!st.nodeId || !st.nodeKey) throw new Error('This server is not registered.');
+    const backend = (st.backend || 'http://185.150.190.30:9977').replace(/\/$/, '');
+    const r = await fetch(`${backend}/nodes/leave`, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ nodeId: st.nodeId, key: st.nodeKey }), signal: AbortSignal.timeout(20000) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.success === false) throw new Error(`Backend: ${j.error || 'HTTP ' + r.status}`);
+    try { await control('stop'); } catch { /* main process not running */ }
+    updateState({ nodeId: '', nodeKey: '', leftNode: st.nodeId, leftAt: new Date().toISOString() });
+    return `Removed ${st.nodeId} from the server list and stopped the game servers.`;
+}
 export const update = () => admin('/node/update', 'POST');
 export const rollback = () => admin('/node/rollback', 'POST');
 

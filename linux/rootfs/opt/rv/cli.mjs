@@ -20,6 +20,7 @@ export const HELP = `Rumbleverse server - terminal admin
   rv update | rv rollback              install the latest server kit / go back one version
   rv supervisor start|stop|restart     all game servers at once (stop keeps them down)
   rv logs <supervisor|setup|mode> [lines]
+  rv leave                             remove this server from the rVclient server list (before deleting it)
   rv setup                             first-time setup on the terminal
   rv reset-password                    new random web UI password
 
@@ -91,6 +92,7 @@ export async function runCommand(args) {
             if (!['start', 'stop', 'restart'].includes(a)) throw new Error('usage: rv supervisor start|stop|restart');
             await ops.control(a);
             return console.log(`Supervisor ${a} done.`);
+        case 'leave': needSetup(); return console.log(await ops.leave());
         case 'logs': return console.log(ops.tail(ops.logFile(a || 'supervisor'), Number(b) || 100) || '(empty)');
         case 'help': case '--help': case '-h': return console.log(HELP);
         default: throw new Error(`Unknown command "${cmd}".\n\n${HELP}`);
