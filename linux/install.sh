@@ -187,9 +187,10 @@ else
 # Kernel Samepage Merging for the Rumbleverse server (identical memory of several modes kept once).
 w /sys/kernel/mm/ksm/run - - - - 1
 w /sys/kernel/mm/ksm/pages_to_scan - - - - 1000
+w /sys/kernel/mm/ksm/use_zero_pages - - - - 1
 EOF
         if command -v systemd-tmpfiles >/dev/null 2>&1; then systemd-tmpfiles --create /etc/tmpfiles.d/rvserver-ksm.conf
-        else echo 1 > /sys/kernel/mm/ksm/run; echo 1000 > /sys/kernel/mm/ksm/pages_to_scan; fi
+        else echo 1 > /sys/kernel/mm/ksm/run; echo 1000 > /sys/kernel/mm/ksm/pages_to_scan; echo 1 > /sys/kernel/mm/ksm/use_zero_pages; fi
         info "Memory sharing is on (and stays on after a reboot)."
     fi
 fi

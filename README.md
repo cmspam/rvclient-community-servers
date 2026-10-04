@@ -269,7 +269,7 @@ The installer sets it up when you answer yes. By hand (Linux 6.4 or newer, conta
 
 ```sh
 # switch KSM on, now and after every reboot
-printf 'w /sys/kernel/mm/ksm/run - - - - 1\nw /sys/kernel/mm/ksm/pages_to_scan - - - - 1000\n' \
+printf 'w /sys/kernel/mm/ksm/run - - - - 1\nw /sys/kernel/mm/ksm/pages_to_scan - - - - 1000\nw /sys/kernel/mm/ksm/use_zero_pages - - - - 1\n' \
   | sudo tee /etc/tmpfiles.d/rvserver-ksm.conf
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/rvserver-ksm.conf
 ```
@@ -278,7 +278,7 @@ Then start the container with `--cap-add SYS_RESOURCE -e RV_KSM=on` (Quadlet: `A
 and `Environment=RV_KSM=on`). See what it saves:
 
 ```sh
-echo "$(( $(cat /sys/kernel/mm/ksm/pages_sharing) * 4 / 1024 )) MB saved"
+echo "$(( ( $(cat /sys/kernel/mm/ksm/pages_sharing) + $(cat /sys/kernel/mm/ksm/ksm_zero_pages) ) * 4 / 1024 )) MB saved"
 ```
 
 After a match a server restarts and briefly needs its full memory again until it has been merged (2 to 3
