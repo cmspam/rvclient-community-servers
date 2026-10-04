@@ -109,8 +109,8 @@ It asks:
 8. whether to turn on the **web admin page**
 
 At the end it prints the web page address and the admin password. The server then unpacks the game,
-registers itself and downloads the server kit. That takes about **20 to 40 minutes** (the kit download is
-slow); it starts by itself afterwards. Run `sudo bash install.sh` again at any time to change these choices;
+registers itself and downloads the server kit. That usually takes **a few minutes** (longer on a slow
+connection); it starts by itself afterwards. Run `sudo bash install.sh` again at any time to change these choices;
 the server's registration and settings are kept.
 
 ### Without the installer: one command
@@ -120,13 +120,14 @@ Replace the zip path and the folder as needed, then paste:
 ```sh
 sudo mkdir -p /srv/rvserver
 sudo podman run -d --name rvserver --restart=unless-stopped --network host \
-  -v /root/Rumbleverse-client-z.zip:/game.zip:ro \
-  -v /srv/rvserver:/data \
+  -v /root/Rumbleverse-client-z.zip:/game.zip:ro,z \
+  -v /srv/rvserver:/data:Z \
   ghcr.io/cmspam/rvclient-community-servers:latest
 sudo podman logs rvserver      # shows the admin password
 ```
 
-(For Docker, write `docker` instead of `podman`.)
+(For Docker, write `docker` instead of `podman`. The `,z` and `:Z` let the container read the files on
+SELinux systems such as Fedora or RHEL; elsewhere they are ignored.)
 
 Then open `http://YOUR-SERVER-IP:8080`, log in with that password, choose your own password, and fill in
 the short setup form. It has the same questions as the installer.
@@ -163,7 +164,7 @@ After=network-online.target
 ContainerName=rvserver
 Image=ghcr.io/cmspam/rvclient-community-servers:latest
 Network=host
-Volume=/root/Rumbleverse-client-z.zip:/game.zip:ro
+Volume=/root/Rumbleverse-client-z.zip:/game.zip:ro,z
 Volume=/srv/rvserver:/data:Z
 AutoUpdate=registry
 # Memory sharing between modes (also switch KSM on, see "Saving memory"):

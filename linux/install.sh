@@ -86,6 +86,9 @@ done
 info "Using $ZIP (${SIZE_MB} MB)"
 echo
 
+# The zip is mounted with ":ro,z": on SELinux systems (Fedora, RHEL, CoreOS) a container may only
+# read it with a container label; elsewhere the flag is ignored.
+
 # ---------------------------------------------------------------- data folder
 bold "3. Where to keep the server's files"
 DEF_DATA="$HOME/rvserver"; [ "$IS_ROOT" = 1 ] && DEF_DATA="/srv/rvserver"
@@ -153,7 +156,7 @@ else
         FIT_KSM=$(( 1 + (USABLE - 3900 - 1800) / 1800 )); [ "$FIT_KSM" -lt "$FIT_PLAIN" ] && FIT_KSM=$FIT_PLAIN
     fi
     [ "$FIT_KSM" -gt 5 ] && FIT_KSM=5; [ "$FIT_PLAIN" -gt 5 ] && FIT_PLAIN=5
-    info "Each mode is its own game server. With $((MEM_MB / 1024)) GB of RAM about $FIT_PLAIN fit"
+    info "Each mode is its own game server. With $((MEM_MB / 1024)).$(( (MEM_MB % 1024) * 10 / 1024 )) GB of RAM about $FIT_PLAIN fit"
     [ "$FIT_KSM" -gt "$FIT_PLAIN" ] && info "(about $FIT_KSM with memory sharing, which this installer can switch on)."
     for i in 0 1 2 3 4; do info "  $((i + 1))) ${MODE_LABEL[$i]}"; done
     if [ "$EDITION" = private ]; then DEF_MODES="2"; else DEF_MODES="1"; [ "$FIT_KSM" -ge 2 ] && DEF_MODES="1 2"; fi
@@ -243,7 +246,7 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         echo "ContainerName=$NAME"
         echo "Image=$IMAGE"
         echo "Network=host"
-        echo "Volume=$ZIP:/game.zip:ro"
+        echo "Volume=$ZIP:/game.zip:ro,z"
         echo "Volume=$DATA:/data:Z"
         echo "AutoUpdate=registry"
         [ "$USE_KSM" = 1 ] && echo "AddCapability=SYS_RESOURCE"
@@ -271,7 +274,7 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
     info "Installed as a systemd service ($NAME.service): starts at boot, updates itself."
 else
     RUN=($ENGINE run -d --name "$NAME" --restart=unless-stopped --network host
-        -v "$ZIP:/game.zip:ro" -v "$DATA:/data")
+        -v "$ZIP:/game.zip:ro,z" -v "$DATA:/data:Z")
     [ "$USE_KSM" = 1 ] && RUN+=(--cap-add SYS_RESOURCE)
     for e in "${ENV_ARGS[@]}"; do RUN+=(-e "$e"); done
     RUN+=("$IMAGE")
@@ -283,7 +286,7 @@ fi
 PASS=""
 if [ "$USE_WEB" = 1 ]; then
     for _ in $(seq 60); do
-        PASS="$($ENGINE logs "$NAME" 2>&1 | awk '/admin password/ {getline; getline; gsub(/ /, ""); print; exit}')"
+        PASS="$($ENGINE logs "$NAME" 2>&1 | awk '/admin password/ {getline; getline; gsub(/ /, ""); print; exit}' || true)"
         [ -n "$PASS" ] && break
         sleep 1
     done
@@ -295,7 +298,7 @@ bold "Done."
 echo
 if [ "$ALREADY" = 0 ]; then
     info "The server now unpacks the game, registers itself and downloads the server kit."
-    info "That takes about 20 to 40 minutes (the kit download is slow). It starts by itself afterwards."
+    info "That usually takes a few minutes (longer on a slow connection). It starts by itself afterwards."
     echo
 fi
 if [ "$USE_WEB" = 1 ]; then
