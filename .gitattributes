@@ -1,3 +1,6 @@
 *.bat text eol=crlf
 *.ps1 text eol=crlf
 *.txt text eol=crlf
+
+# Linux container files must keep Unix line endings.
+linux/** text eol=lf

@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rumbleverse Server</title>
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #667085; --line: #dfe3ea;
+  --accent: #5b3fd6; --accent-text: #ffffff; --ok: #1a7f37; --warn: #b26b00; --bad: #c0362c; --chip: #eef0f4;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14161b; --panel: #1d2027; --text: #e6e8ee; --muted: #9aa3b2; --line: #2e333d;
+    --accent: #8b74ff; --accent-text: #0e0f13; --ok: #4cc06b; --warn: #e3a33b; --bad: #ef6b60; --chip: #272b34; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { margin: 0; font-size: 18px; }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.card h2 { margin: 0 0 12px; font-size: 16px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 16px; }
+.k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.v { font-weight: 600; word-break: break-all; }
+button { font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--text); border-radius: 7px;
+  padding: 6px 12px; cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.danger { color: var(--bad); }
+button:disabled { opacity: .5; cursor: default; }
+input, select { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg);
+  color: var(--text); width: 100%; }
+label { display: block; margin: 10px 0 4px; font-size: 13px; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.table-wrap { overflow-x: auto; }
+.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--chip); font-size: 12px; font-weight: 600; }
+.up { color: var(--ok); } .booting { color: var(--warn); } .down { color: var(--bad); } .off { color: var(--muted); }
+pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 420px;
+  overflow: auto; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+.narrow { max-width: 420px; margin: 40px auto; }
+.msg { margin: 10px 0 0; font-size: 14px; }
+.msg.err { color: var(--bad); } .msg.ok { color: var(--ok); }
+.hidden { display: none !important; }
+.switch { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.switch input { width: auto; }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); width: min(520px, 92vw); }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+.muted { color: var(--muted); font-size: 13px; }
+.modes-pick { display: flex; flex-wrap: wrap; gap: 10px 18px; }
+@media (max-width: 640px) { .hide-sm { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rumbleverse Server</h1>
+  <div class="row">
+    <button id="btnPw" class="hidden">Change password</button>
+    <button id="btnLogout" class="hidden">Log out</button>
+  </div>
+</header>
+<main>
+
+<!-- login -->
+<section id="vLogin" class="card narrow hidden">
+  <h2>Log in</h2>
+  <form id="fLogin">
+    <label for="lpw">Password</label>
+    <input id="lpw" type="password" autocomplete="current-password" required>
+    <p class="muted">First start: the password is in the container log (<code>podman logs &lt;name&gt;</code>).</p>
+    <button class="primary" type="submit">Log in</button>
+    <p id="mLogin" class="msg err"></p>
+  </form>
+</section>
+
+<!-- password change -->
+<section id="vPw" class="card narrow hidden">
+  <h2>Choose your password</h2>
+  <form id="fPw">
+    <p id="pwWhy" class="muted">Replace the generated password with your own.</p>
+    <label for="pcur">Current password</label>
+    <input id="pcur" type="password" autocomplete="current-password" required>
+    <label for="pnew">New password (at least 10 characters)</label>
+    <input id="pnew" type="password" autocomplete="new-password" minlength="10" required>
+    <label for="pnew2">New password again</label>
+    <input id="pnew2" type="password" autocomplete="new-password" minlength="10" required>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" type="submit">Save password</button>
+      <button type="button" id="pwCancel" class="hidden">Cancel</button>
+    </div>
+    <p id="mPw" class="msg err"></p>
+  </form>
+</section>
+
+<!-- setup wizard -->
+<section id="vSetup" class="hidden">
+  <div class="card">
+    <h2>Set up your server</h2>
+    <p class="muted">Your game zip must be mounted in the container (see the README). Setup unpacks it, registers the
+      server with the rVclient backend, downloads the server kit through the backend and writes the configs.</p>
+    <form id="fSetup">
+      <label>Kind of server</label>
+      <div class="row">
+        <label class="switch"><input type="radio" name="edition" value="community" checked> Community (public matchmaking, needs approval)</label>
+        <label class="switch"><input type="radio" name="edition" value="private"> Private (you and friends)</label>
+      </div>
+      <div id="sCommunity">
+        <label for="sContact">Your Discord name (so the admins can reach you about approval)</label>
+        <input id="sContact" maxlength="60">
+      </div>
+      <div id="sPrivate" class="hidden">
+        <label for="sCode">Setup code (launcher: Server Status &gt; My private servers &gt; Set up a private server; valid 30 minutes)</label>
+        <input id="sCode" maxlength="40" placeholder="ABCDE-FGH23">
+      </div>
+      <label for="sName">Server name</label>
+      <input id="sName" maxlength="60" placeholder="e.g. Tokyo Community">
+      <div class="grid">
+        <div><label for="sIp">Public IP players connect to</label><input id="sIp" placeholder="detecting..."></div>
+        <div id="sRegionBox"><label for="sRegion">Region</label><select id="sRegion"></select></div>
+      </div>
+      <label>Modes to run (each needs about 4 GB of RAM)</label>
+      <p class="muted" id="sFit"></p>
+      <div class="modes-pick" id="sModes"></div>
+      <details style="margin-top:12px"><summary class="muted">Already registered? Use an existing node id and key</summary>
+        <div class="grid">
+          <div><label for="sNodeId">Node id</label><input id="sNodeId" placeholder="node-..."></div>
+          <div><label for="sNodeKey">Node key</label><input id="sNodeKey" type="password"></div>
+        </div>
+      </details>
+      <div class="row" style="margin-top:14px"><button class="primary" type="submit" id="sGo">Start setup</button></div>
+      <p id="mSetup" class="msg err"></p>
+    </form>
+  </div>
+  <div class="card" id="sProgress">
+    <h2>Setup progress</h2>
+    <pre id="sLog">Waiting for setup to start.</pre>
+  </div>
+</section>
+
+<!-- dashboard -->
+<section id="vDash" class="hidden">
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2 id="dName" style="margin:0">Your server</h2>
+      <span id="dReview" class="chip">...</span>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div><div class="k">Node</div><div class="v" id="dNode">-</div></div>
+      <div><div class="k">Kind</div><div class="v" id="dEdition">-</div></div>
+      <div><div class="k">Region</div><div class="v" id="dRegion">-</div></div>
+      <div><div class="k">Public IP</div><div class="v" id="dIp">-</div></div>
+      <div><div class="k">Server kit</div><div class="v" id="dKit">-</div></div>
+      <div><div class="k">Supervisor</div><div class="v" id="dSup">-</div></div>
+    </div>
+    <p id="dReason" class="muted"></p>
+    <div class="row" style="margin-top:8px">
+      <button id="bUpdate">Update server kit</button>
+      <button id="bRollback">Roll back</button>
+      <button id="bRestartAll">Restart all modes</button>
+      <button id="bSupStart" class="hidden primary">Start all servers</button>
+      <button id="bSupStop" class="danger">Stop all servers</button>
+      <button id="bSupRestart">Restart supervisor</button>
+    </div>
+    <p id="mDash" class="msg"></p>
+  </div>
+
+  <div class="card">
+    <h2>Modes</h2>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Mode</th><th>On</th><th>State</th><th>Players</th><th class="hide-sm">Uptime</th>
+        <th class="hide-sm">Memory</th><th class="hide-sm">Restarts / crashes</th><th></th></tr></thead>
+      <tbody id="tModes"></tbody>
+    </table>
+    </div>
+    <p class="muted">Switching a mode off stops an empty server at once; a server with players closes after its match.
+      Settings changes take effect at the next restart (BR modes restart after every match).</p>
+  </div>
+
+  <div class="card">
+    <h2>Machine</h2>
+    <div class="grid">
+      <div><div class="k">Memory available</div><div class="v" id="yMem">-</div></div>
+      <div><div class="k">Swap / zram used</div><div class="v" id="ySwap">-</div></div>
+      <div><div class="k">Load (1/5/15 min)</div><div class="v" id="yLoad">-</div></div>
+      <div><div class="k">Disk free</div><div class="v" id="yDisk">-</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="justify-content:space-between">
+      <h2 style="margin:0">Logs</h2>
+      <div class="row"><select id="lWhich" style="width:auto"></select><button id="lRefresh">Refresh</button></div>
+    </div>
+    <pre id="lText" style="margin-top:12px"></pre>
+  </div>
+</section>
+
+<dialog id="dlgSettings">
+  <form id="fSettings" method="dialog">
+    <h2 id="stTitle" style="margin-top:0">Settings</h2>
+    <div id="stFields"></div>
+    <label class="switch" style="margin-top:12px"><input type="checkbox" id="stRestart"> Restart this server now (ends a match in progress)</label>
+    <div class="row" style="margin-top:14px">
+      <button class="primary" value="save" id="stSave">Save</button>
+      <button value="cancel" formnovalidate>Cancel</button>
+    </div>
+    <p id="mSt" class="msg err"></p>
+  </form>
+</dialog>
+
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const views = ['vLogin', 'vPw', 'vSetup', 'vDash'];
+let timer = null, nodeTimer = null, current = null, settingsMode = null;
+
+function show(v) {
+  views.forEach(x => $(x).classList.toggle('hidden', x !== v));
+  const inApp = v === 'vDash' || v === 'vSetup';
+  $('btnLogout').classList.toggle('hidden', v === 'vLogin');
+  $('btnPw').classList.toggle('hidden', !inApp);
+  current = v;
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { 'content-type': 'application/json', 'x-rv-ui': '1', ...(opts.headers || {}) },
+    body: opts.body ? JSON.stringify(opts.body) : undefined });
+  const j = await r.json().catch(() => ({ success: false, error: `HTTP ${r.status}` }));
+  if (r.status === 401 && path !== '/api/login') { stop(); show('vLogin'); throw new Error(j.error); }
+  if (r.status === 403 && /new password first/.test(j.error || '')) { stop(); pwView(true); throw new Error(j.error); }
+  if (!r.ok || j.success === false) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+const post = (p, body = {}) => api(p, { method: 'POST', body });
+function msg(el, text, ok = false) { $(el).textContent = text || ''; $(el).className = 'msg ' + (ok ? 'ok' : 'err'); }
+function stop() { clearInterval(timer); timer = null; }
+const fmtUp = s => !s ? '-' : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor(s % 3600 / 60)}m`;
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function pwView(forced) {
+  $('pwWhy').textContent = forced ? 'Replace the generated password with your own before continuing.' : 'Change your admin password.';
+  $('pwCancel').classList.toggle('hidden', forced);
+  ['pcur', 'pnew', 'pnew2'].forEach(i => $(i).value = '');
+  msg('mPw', ''); show('vPw');
+}
+
+async function start() {
+  try {
+    const st = await api('/api/status');
+    if (!st.configured) return setupView(st);
+    dashView();
+  } catch { /* api() switched the view */ }
+}
+
+// ---- login / password ----
+$('fLogin').onsubmit = async e => {
+  e.preventDefault(); msg('mLogin', '');
+  try {
+    const r = await post('/api/login', { password: $('lpw').value });
+    $('lpw').value = '';
+    if (r.mustChange) return pwView(true);
+    start();
+  } catch (err) { msg('mLogin', err.message); }
+};
+$('fPw').onsubmit = async e => {
+  e.preventDefault();
+  if ($('pnew').value !== $('pnew2').value) return msg('mPw', 'The new passwords do not match.');
+  try { await post('/api/password', { current: $('pcur').value, next: $('pnew').value }); start(); }
+  catch (err) { msg('mPw', err.message); }
+};
+$('pwCancel').onclick = () => start();
+$('btnPw').onclick = () => { stop(); pwView(false); };
+$('btnLogout').onclick = async () => { stop(); try { await post('/api/logout'); } catch {} show('vLogin'); };
+
+// ---- setup ----
+let setupFilled = false;
+async function setupView() {
+  show('vSetup');
+  if (!setupFilled) {
+    setupFilled = true;
+    $('sModes').innerHTML = ['solo', 'playground', 'duos', 'trios', 'squads'].map(m =>
+      `<label class="switch"><input type="checkbox" value="${m}" ${['solo', 'playground'].includes(m) ? 'checked' : ''}> ${m}</label>`).join('');
+    api('/api/setup/detect').then(d => {
+      if (!$('sIp').value) $('sIp').value = d.publicIp || '';
+      if (d.memMb) {
+        $('sFit').textContent = `This machine has ${(d.memMb / 1024).toFixed(1)} GB of RAM: about ${d.fit} mode${d.fit > 1 ? 's' : ''} fit` +
+          (d.ksm ? ' (memory sharing is on).' : '. With memory sharing (RV_KSM=on) more fit, see the README.');
+        $('sModes').querySelectorAll('input').forEach((c, k) => c.checked = k < d.fit || (d.fit === 1 && k === 0));
+      }
+      const best = Object.entries(d.pings).filter(([, ms]) => ms != null).sort((a, b) => a[1] - b[1])[0]?.[0];
+      $('sRegion').innerHTML = Object.entries(d.regions).map(([k, n]) =>
+        `<option value="${k}" ${k === best ? 'selected' : ''}>${esc(n)} (${k}) ${d.pings[k] == null ? '- no answer' : d.pings[k] + ' ms'}</option>`).join('');
+    }).catch(() => {});
+  }
+  pollSetup();
+  stop(); timer = setInterval(pollSetup, 2000);
+}
+document.querySelectorAll('input[name=edition]').forEach(r => r.onchange = () => {
+  const priv = document.querySelector('input[name=edition]:checked').value === 'private';
+  $('sPrivate').classList.toggle('hidden', !priv); $('sCommunity').classList.toggle('hidden', priv);
+  $('sRegionBox').classList.toggle('hidden', priv);
+});
+async function pollSetup() {
+  try {
+    const s = await api('/api/setup');
+    if (s.log.length) { const pre = $('sLog'); pre.textContent = s.log.join('\n'); pre.scrollTop = pre.scrollHeight; }
+    $('sGo').disabled = s.running;
+    if (s.error) msg('mSetup', s.error);
+    if (s.configured && !s.running) { stop(); dashView(); }
+  } catch {}
+}
+$('fSetup').onsubmit = async e => {
+  e.preventDefault(); msg('mSetup', '');
+  const edition = document.querySelector('input[name=edition]:checked').value;
+  const modes = [...$('sModes').querySelectorAll('input:checked')].map(i => i.value);
+  if (!modes.length) return msg('mSetup', 'Pick at least one mode.');
+  try {
+    await post('/api/setup', { edition, setupCode: $('sCode').value, contact: $('sContact').value, name: $('sName').value,
+      modes, publicIp: $('sIp').value, region: edition === 'private' ? '' : $('sRegion').value,
+      nodeId: $('sNodeId').value, nodeKey: $('sNodeKey').value });
+    $('sLog').textContent = 'Setup started...';
+  } catch (err) { msg('mSetup', err.message); }
+};
+
+// ---- dashboard ----
+function dashView() {
+  show('vDash');
+  refresh(); loadNode(); loadLog();
+  stop(); timer = setInterval(() => { refresh(); }, 5000);
+  if (!nodeTimer) nodeTimer = setInterval(() => { if (current === 'vDash') loadNode(); }, 60000);
+}
+function stateOf(i) {
+  if (!i.running) return i.modeOff ? ['OFF', 'off'] : i.relaunchPending ? ['RESTARTING', 'booting'] : i.want === 'stopped' ? ['STOPPED', 'off'] : ['DOWN', 'down'];
+  if (i.closeAfterMatch) return ['CLOSING', 'booting'];
+  return i.heartbeat ? [i.joinable === false ? 'UP (not joinable)' : 'UP', 'up'] : ['BOOTING', 'booting'];
+}
+async function refresh() {
+  let st;
+  try { st = await api('/api/status'); } catch { return; }
+  if (!st.configured) return setupView();
+  const n = st.node;
+  $('dName').textContent = n.name || 'Your server';
+  $('dNode').textContent = n.nodeId || '-';
+  $('dEdition').textContent = n.edition || '-';
+  $('dRegion').textContent = n.regionName ? `${n.regionName} (${n.region})` : (n.region || '-');
+  $('dIp').textContent = n.publicIp || '-';
+  $('dKit').textContent = n.kitVersion || '-';
+  const sup = st.supervisor;
+  $('dSup').textContent = sup.state + (sup.upSec ? ` (${fmtUp(sup.upSec)})` : '') +
+    (sup.pendingRestart ? ' - restarts when all servers are empty (supervisor update)' : '');
+  $('bSupStart').classList.toggle('hidden', sup.state !== 'stopped');
+  $('bSupStop').classList.toggle('hidden', sup.state === 'stopped');
+  const rows = st.instances.map(i => {
+    const [label, cls] = stateOf(i);
+    const mem = i.rssMb == null ? '-' : `${(i.rssMb / 1024).toFixed(2)} GB${i.swapMb ? ` (+${(i.swapMb / 1024).toFixed(1)} zram)` : ''}`;
+    return `<tr>
+      <td><b>${esc(i.label)}</b><div class="muted">port ${i.port}</div></td>
+      <td><label class="switch"><input type="checkbox" data-mode="${i.mode}" ${i.modeOn ? 'checked' : ''}></label></td>
+      <td><span class="${cls}"><b>${label}</b></span></td>
+      <td>${i.players ?? 0}</td>
+      <td class="hide-sm">${fmtUp(i.uptimeSec)}</td>
+      <td class="hide-sm">${mem}</td>
+      <td class="hide-sm">${i.restarts} / ${i.crashes}</td>
+      <td><div class="row">
+        <button data-act="restart" data-id="${i.id}">Restart</button>
+        ${i.running ? `<button data-act="stop" data-id="${i.id}">Stop</button>` : `<button data-act="start" data-id="${i.id}">Start</button>`}
+        <button data-set="${i.mode}" title="Settings">Settings</button>
+      </div></td></tr>`;
+  });
+  $('tModes').innerHTML = rows.join('') || `<tr><td colspan="8" class="muted">${esc(st.supError || 'Supervisor not running.')}</td></tr>`;
+  const y = st.system;
+  $('yMem').textContent = y.memAvailMb ? `${(y.memAvailMb / 1024).toFixed(1)} of ${(y.memTotalMb / 1024).toFixed(1)} GB` : '-';
+  $('ySwap').textContent = y.swapTotalMb ? `${((y.swapTotalMb - y.swapFreeMb) / 1024).toFixed(1)} of ${(y.swapTotalMb / 1024).toFixed(1)} GB` : 'none';
+  $('yLoad').textContent = `${y.load.join(' / ')} (${y.cpus} CPUs)`;
+  $('yDisk').textContent = y.disk ? `${y.disk.freeGb} of ${y.disk.totalGb} GB` : '-';
+  if ($('lWhich').options.length === 0) {
+    $('lWhich').innerHTML = `<option value="supervisor">Supervisor</option><option value="setup">Setup</option>` +
+      st.instances.map(i => `<option value="${i.id}">Game: ${esc(i.label)}</option>`).join('');
+  }
+}
+async function loadNode() {
+  try {
+    const r = await api('/api/node');
+    const node = r.node || {};
+    const status = node.status || 'unknown';
+    $('dReview').textContent = status;
+    $('dReview').className = 'chip ' + (/approved|live|active/i.test(status) ? 'up' : /pending|review|waiting/i.test(status) ? 'booting' : /denied|blocked|removed/i.test(status) ? 'down' : '');
+    const parts = [];
+    if (node.reason || node.statusReason) parts.push(`Reason: ${node.reason || node.statusReason}`);
+    if (r.latestServerVersion && r.latestServerVersion !== r.localVersion) parts.push(`Newer server kit available: ${r.latestServerVersion}`);
+    if (r.update?.state) parts.push(`Update: ${r.update.state}${r.update.message ? ' - ' + r.update.message : ''}`);
+    $('dReason').textContent = parts.join('  ·  ');
+  } catch (e) { $('dReview').textContent = 'backend unreachable'; $('dReview').className = 'chip down'; }
+}
+async function loadLog() {
+  try { const r = await api(`/api/logs?which=${encodeURIComponent($('lWhich').value || 'supervisor')}&lines=300`);
+    const pre = $('lText'); pre.textContent = r.text || '(empty)'; pre.scrollTop = pre.scrollHeight; } catch {}
+}
+$('lRefresh').onclick = loadLog;
+$('lWhich').onchange = loadLog;
+
+async function act(fn, okText) {
+  msg('mDash', '');
+  try { const r = await fn(); msg('mDash', r?.message || okText, true); setTimeout(refresh, 800); }
+  catch (err) { msg('mDash', err.message); }
+}
+$('tModes').onclick = e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  if (b.dataset.act) {
+    if (b.dataset.act !== 'start' && !confirm(`${b.dataset.act} ${b.dataset.id}? Players on it will be disconnected.`)) return;
+    act(() => post(`/api/instances/${b.dataset.id}/${b.dataset.act}`), `${b.dataset.act} sent to ${b.dataset.id}.`);
+  }
+  if (b.dataset.set) openSettings(b.dataset.set);
+};
+$('tModes').onchange = e => {
+  const c = e.target;
+  if (!c.dataset.mode) return;
+  act(() => post('/api/modes', { mode: c.dataset.mode, on: c.checked }), `Mode ${c.dataset.mode} switched ${c.checked ? 'on' : 'off'}.`);
+};
+$('bUpdate').onclick = () => confirm('Check for and install the latest server kit? Servers restart one by one once empty.') &&
+  act(() => post('/api/node/update'), 'Update started.');
+$('bRollback').onclick = () => confirm('Roll back to the previous server kit?') && act(() => post('/api/node/rollback'), 'Rollback started.');
+$('bRestartAll').onclick = () => confirm('Restart every running mode? Players will be disconnected.') && act(() => post('/api/restart-all'), 'Restarting all modes.');
+$('bSupStop').onclick = () => confirm('Stop all game servers? They stay down until you start them again.') && act(() => post('/api/supervisor/stop'), 'Stopping all servers.');
+$('bSupStart').onclick = () => act(() => post('/api/supervisor/start'), 'Starting all servers.');
+$('bSupRestart').onclick = () => confirm('Restart the supervisor? This restarts every game server (needed after some kit updates).') &&
+  act(() => post('/api/supervisor/restart'), 'Restarting the supervisor.');
+
+// ---- settings dialog ----
+async function openSettings(mode) {
+  settingsMode = mode; msg('mSt', '');
+  try {
+    const r = await api(`/api/settings/${mode}`);
+    $('stTitle').textContent = `${r.label} settings`;
+    $('stFields').innerHTML = r.settings.map(s => `<label for="st_${esc(s.key)}">${esc(s.label)}</label>
+      <input id="st_${esc(s.key)}" data-key="${esc(s.key)}" value="${esc(s.value)}" ${s.type === 'int' ? `type="number" min="${s.min}" max="${s.max}"` : ''}>`).join('')
+      || '<p class="muted">No editable settings in this config.</p>';
+    $('stRestart').checked = false;
+    $('dlgSettings').showModal();
+  } catch (err) { msg('mDash', err.message); }
+}
+$('fSettings').onsubmit = async e => {
+  if (e.submitter?.value !== 'save') return;
+  e.preventDefault();
+  const values = {};
+  $('stFields').querySelectorAll('input[data-key]').forEach(i => values[i.dataset.key] = i.value);
+  try {
+    const r = await post(`/api/settings/${settingsMode}`, { values, restart: $('stRestart').checked });
+    $('dlgSettings').close(); msg('mDash', r.message, true); setTimeout(refresh, 800);
+  } catch (err) { msg('mSt', err.message); }
+};
+
+start();
+</script>
+</body>
+</html>

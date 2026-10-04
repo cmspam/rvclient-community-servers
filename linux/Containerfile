@@ -1,0 +1,40 @@
+# Rumbleverse community / private server on Linux (game server under Wine).
+#
+# The image holds no game files and no server kit: you mount your own game zip, and the server kit
+# is downloaded through the rVclient backend with your server's own key, as on Windows.
+# Small helper that opts the game servers into KSM memory sharing (RV_KSM=on).
+FROM docker.io/library/alpine:latest AS build
+RUN apk add --no-cache build-base
+COPY src/rv-ksm.c /src/
+RUN gcc -O2 -static -s -o /src/rv-ksm /src/rv-ksm.c
+
+FROM docker.io/library/alpine:latest
+
+# Podman's auto-update (podman-auto-update.timer) pulls newer images of this tag by itself.
+LABEL io.containers.autoupdate=registry \
+      org.opencontainers.image.title="Rumbleverse server (Linux/Wine)" \
+      org.opencontainers.image.description="Rumbleverse community/private server under Wine, with a web admin UI"
+
+RUN apk add --no-cache wine nodejs libarchive-tools tini ca-certificates tzdata \
+ && wine --version && node --version
+
+COPY rootfs/ /
+COPY --from=build /src/rv-ksm /opt/rv/bin/rv-ksm
+RUN chmod 0755 /opt/rv/bin/tar /opt/rv/rv.mjs \
+ && ln -s /opt/rv/rv.mjs /usr/local/bin/rv
+
+ENV RV_DATA=/data \
+    WINEPREFIX=/data/wine \
+    WINEDEBUG=-all \
+    WINEDLLOVERRIDES="dxgi=n,b" \
+    PATH=/opt/rv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 7777 Solos, 7778 Playground, 7779 Duos, 7780 Trios, 7781 Squads; 8080 web admin UI.
+EXPOSE 7777-7781/udp 8080/tcp
+VOLUME /data
+
+HEALTHCHECK --interval=60s --timeout=10s --start-period=120s \
+  CMD wget -q -O /dev/null http://127.0.0.1:${RV_WEBUI_PORT:-8080}/healthz || exit 1
+
+ENTRYPOINT ["/sbin/tini", "--", "node", "/opt/rv/rv.mjs"]
+CMD ["run"]

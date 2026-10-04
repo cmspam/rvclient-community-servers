@@ -1,0 +1,4 @@
+#!/bin/sh
+# The upstream updater unpacks server kit zips with `tar -xf kit.zip`. On Windows that is
+# bsdtar (tar.exe); GNU/BusyBox tar cannot read zip files, so hand every call to bsdtar.
+exec bsdtar "$@"
