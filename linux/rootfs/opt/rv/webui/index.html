@@ -438,7 +438,10 @@ async function openSettings(mode) {
     const r = await api(`/api/settings/${mode}`);
     $('stTitle').textContent = `${r.label} settings`;
     $('stFields').innerHTML = r.settings.map(s => `<label for="st_${esc(s.key)}">${esc(s.label)}</label>
-      <input id="st_${esc(s.key)}" data-key="${esc(s.key)}" value="${esc(s.value)}" ${s.type === 'int' ? `type="number" min="${s.min}" max="${s.max}"` : ''}>`).join('')
+      ${s.type === 'bool'
+        ? `<select id="st_${esc(s.key)}" data-key="${esc(s.key)}">${s.unset ? '<option value="" selected>(server default)</option>' : ''}
+             <option value="true"${s.value === 'true' ? ' selected' : ''}>on</option><option value="false"${s.value === 'false' ? ' selected' : ''}>off</option></select>`
+        : `<input id="st_${esc(s.key)}" data-key="${esc(s.key)}" value="${esc(s.value)}"${s.unset ? ' placeholder="server default"' : ''} ${s.type === 'int' ? `type="number" min="${s.min}" max="${s.max}"` : ''}>`}`).join('')
       || '<p class="muted">No editable settings in this config.</p>';
     $('stRestart').checked = false;
     $('dlgSettings').showModal();
@@ -448,7 +451,7 @@ $('fSettings').onsubmit = async e => {
   if (e.submitter?.value !== 'save') return;
   e.preventDefault();
   const values = {};
-  $('stFields').querySelectorAll('input[data-key]').forEach(i => values[i.dataset.key] = i.value);
+  $('stFields').querySelectorAll('[data-key]').forEach(i => values[i.dataset.key] = i.value);
   try {
     const r = await post(`/api/settings/${settingsMode}`, { values, restart: $('stRestart').checked });
     $('dlgSettings').close(); msg('mDash', r.message, true); setTimeout(refresh, 800);

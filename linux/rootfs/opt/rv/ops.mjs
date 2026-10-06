@@ -20,7 +20,14 @@ export const SETTING_INFO = {
     'Player Settings/StartingCoreValue': { label: 'Starting Core stat', type: 'int', min: 0, max: 100 },
     'Player Settings/StartingArmsValue': { label: 'Starting Arms stat', type: 'int', min: 0, max: 100 },
     'Player Settings/StartingLegsValue': { label: 'Starting Legs stat', type: 'int', min: 0, max: 100 },
+    // The same switches the Windows rV Modes app offers. Server.dll reads them from [Game Settings];
+    // a key that is not in the file yet uses the server's built-in default until it is set here.
+    'Game Settings/BotNavigation': { label: 'Bot navigation (bots find real paths; small extra CPU)', type: 'bool' },
+    'Game Settings/OutfitCheck': { label: 'Remove invisible players', type: 'bool' },
+    'Game Settings/OutfitGraceSec': { label: 'Invisible player grace (seconds)', type: 'int', min: 0, max: 600 },
+    'Game Settings/KickNoClothing': { label: 'Remove players with no clothing', type: 'bool' },
 };
+const BOOL_VALUES = { true: 'true', on: 'true', yes: 'true', 1: 'true', false: 'false', off: 'false', no: 'false', 0: 'false' };
 const EDITABLE_SECTIONS = ['Game Settings', 'Player Settings'];
 const LOCKED = new Set(['Game Settings/GameMode', 'Game Settings/RequireMatchmadeJoin']);   // written by setup
 
@@ -141,6 +148,10 @@ export function getSettings(mode) {
     const settings = Object.entries(ini)
         .filter(([k]) => EDITABLE_SECTIONS.includes(k.split('/')[0]) && !LOCKED.has(k))
         .map(([k, v]) => ({ key: k, name: k.split('/')[1], value: v, ...(SETTING_INFO[k] || { label: k.split('/')[1], type: 'text' }) }));
+    // Known settings that this Config.<mode>.ini does not contain yet: shown as unset (server default).
+    for (const [k, info] of Object.entries(SETTING_INFO)) {
+        if (!(k in ini) && EDITABLE_SECTIONS.includes(k.split('/')[0])) settings.push({ key: k, name: k.split('/')[1], value: '', unset: true, ...info });
+    }
     return { mode: m.key, id: m.id, label: m.label, settings };
 }
 
@@ -150,12 +161,18 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
     const ini = readIni(file);
     const bySection = {};
     for (const [rawKey, v] of Object.entries(values)) {
-        const k = rawKey.includes('/') ? rawKey : Object.keys(ini).find(x => x.split('/')[1] === rawKey && EDITABLE_SECTIONS.includes(x.split('/')[0])) || rawKey;
-        if (!(k in ini) || LOCKED.has(k) || !EDITABLE_SECTIONS.includes(k.split('/')[0])) throw new Error(`${rawKey} cannot be changed here`);
+        const byName = keys => keys.find(x => x.toLowerCase().split('/')[1] === rawKey.toLowerCase() && EDITABLE_SECTIONS.includes(x.split('/')[0]));
+        const k = rawKey.includes('/') ? rawKey : byName(Object.keys(ini)) || byName(Object.keys(SETTING_INFO)) || rawKey;
+        const known = k in ini || k in SETTING_INFO;
+        if (!known || LOCKED.has(k) || !EDITABLE_SECTIONS.includes(k.split('/')[0])) throw new Error(`${rawKey} cannot be changed here`);
         const info = SETTING_INFO[k];
-        const val = String(v).trim();
+        let val = String(v).trim();
+        if (val === '' && !(k in ini)) continue;   // still unset: keep the server default
         if (info?.type === 'int') {
             if (!/^-?\d+$/.test(val) || Number(val) < info.min || Number(val) > info.max) throw new Error(`${info.label}: ${info.min} to ${info.max}`);
+        } else if (info?.type === 'bool') {
+            val = BOOL_VALUES[val.toLowerCase()];
+            if (!val) throw new Error(`${info.label}: true or false`);
         } else if (!/^[\w .,:+-]{0,100}$/.test(val)) throw new Error(`${k}: invalid value`);
         const [sec, key] = k.split('/');
         (bySection[sec] ||= {})[key] = val;

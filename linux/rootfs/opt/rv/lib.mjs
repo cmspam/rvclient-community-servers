@@ -78,7 +78,7 @@ export function setIniValues(file, section, values) {
         const sec = lines[n].match(/^\s*\[(.+)\]\s*$/);
         if (sec) { cur = sec[1]; continue; }
         if (cur !== section) continue;
-        sectionEnd = n;
+        if (lines[n].trim()) sectionEnd = n;   // new keys go after the section's last real line, not after blank ones
         const kv = lines[n].match(/^(\s*)([^;#=][^=]*?)(\s*=\s*)(.*?)\s*$/);
         if (kv && pending.has(kv[2])) { lines[n] = `${kv[1]}${kv[2]}${kv[3]}${pending.get(kv[2])}`; pending.delete(kv[2]); }
     }

@@ -58,10 +58,12 @@ async function printNode() {
     if (r.update?.state) console.log(`Update:         ${r.update.state}${r.update.message ? ` - ${r.update.message}` : ''}`);
 }
 
+const hint = x => x.type === 'int' ? ` (${x.min}-${x.max})` : x.type === 'bool' ? ' (true/false)' : '';
+
 function printSettings(mode) {
     const s = ops.getSettings(mode);
     console.log(`${s.label} settings:`);
-    for (const x of s.settings) console.log(`  ${x.name.padEnd(22)} ${String(x.value).padEnd(8)} ${x.label !== x.name ? x.label : ''}${x.type === 'int' ? ` (${x.min}-${x.max})` : ''}`);
+    for (const x of s.settings) console.log(`  ${x.name.padEnd(22)} ${(x.unset ? '(default)' : String(x.value)).padEnd(10)} ${x.label !== x.name ? x.label : ''}${hint(x)}`);
 }
 
 export async function runCommand(args) {
@@ -144,10 +146,10 @@ export async function menu() {
                 case '5': {
                     const m = await pickMode(); if (!m) return;
                     const s = ops.getSettings(m);
-                    s.settings.forEach((x, k) => console.log(`  ${k + 1}) ${x.label.padEnd(40)} ${x.value}`));
+                    s.settings.forEach((x, k) => console.log(`  ${k + 1}) ${x.label.padEnd(40)} ${x.unset ? '(default)' : x.value}`));
                     const n = Number(await ask('Setting number (empty = back): '));
                     const x = s.settings[n - 1]; if (!x) return;
-                    const v = await ask(`New value for "${x.label}"${x.type === 'int' ? ` (${x.min}-${x.max})` : ''} [${x.value}]: `);
+                    const v = await ask(`New value for "${x.label}"${hint(x)} [${x.unset ? 'default' : x.value}]: `);
                     if (v === '') return console.log('  Nothing changed.');
                     const now = (await ask('Restart this server now to apply it? A match in progress ends. (y/N): ')).toLowerCase() === 'y';
                     return console.log('  ' + await ops.saveSettings(m, { [x.key]: v }, { restart: now }));

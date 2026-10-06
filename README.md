@@ -202,7 +202,9 @@ Open `http://YOUR-SERVER-IP:8080`. It has the same controls as the Windows rV Mo
 
 - your server as the rVclient backend sees it: review status, server kit version, update and roll back
 - each mode: on/off, state, players, uptime, memory, restart, stop, start
-- per-mode settings: bots per match, barge countdown, empty-match restart, starting stats
+- per-mode settings: bots per match, barge countdown, empty-match restart, starting stats, and the same
+  switches as the Windows rV Modes app: bot navigation, removing invisible players (and its grace time),
+  removing players with no clothing
 - restart all modes, stop or start all servers
 - logs
 
@@ -229,6 +231,7 @@ sudo podman exec rvserver rv mode duos on            # switch a mode on or off
 sudo podman exec rvserver rv restart solo            # restart / stop / start one mode
 sudo podman exec rvserver rv settings solo           # show a mode's settings
 sudo podman exec rvserver rv set solo SpawnBot 40    # change one (add --restart to apply now)
+sudo podman exec rvserver rv set solo BotNavigation true   # on/off settings take true or false
 sudo podman exec rvserver rv update                  # install the newest server kit
 sudo podman exec rvserver rv logs solo 100           # last lines of a log
 sudo podman exec rvserver rv leave                   # remove from the server list (before deleting)
