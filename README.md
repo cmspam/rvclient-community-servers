@@ -251,8 +251,8 @@ sudo podman stop rvserver           # stop (the game servers shut down cleanly)
 Updates: the container checks for a newer server kit (the game server software) 5 minutes after it
 starts and then every 4 hours, and installs it through the kit's own updater, the same as `rv update`.
 Each mode restarts on the new kit only once it is empty (after 3 hours regardless), and the updater
-rolls back by itself if the new build crashes twice; a version that was rolled back is not tried again.
-`RV_KIT_AUTO_UPDATE=off` turns this off. The
+rolls back by itself if a mode crashes twice in the first 10 minutes; the next check then tries the
+newest kit again. `RV_KIT_AUTO_UPDATE=off` turns this off. The
 container image (Wine and the tools around it) updates itself with the Quadlet above; otherwise run
 `sudo podman pull ghcr.io/cmspam/rvclient-community-servers:latest` and re-create the container
 (or run the installer again). Your data stays in the data folder.

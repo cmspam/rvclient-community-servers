@@ -7,7 +7,8 @@
 // the same call as `rv update`. The updater then restarts each mode only once it is empty (after
 // 3 h regardless) and rolls back on its own if the new build crashes twice.
 //
-// RV_KIT_AUTO_UPDATE=off turns it off. A version that was rolled back is not tried again.
+// RV_KIT_AUTO_UPDATE=off turns it off. If the updater rolled a version back (crashes happen on any
+// version), the next check simply tries the newest version again.
 import { isConfigured } from './lib.mjs';
 import * as ops from './ops.mjs';
 
@@ -32,7 +33,6 @@ export async function checkOnce(node = ops.node, update = ops.update) {
     if (!latest) return `on ${local || 'unknown'}; the backend offered no version`;
     if (st && BUSY.has(st.state)) return `an update is already ${st.state} (${st.version || latest})`;
     if (!newer(latest, local)) return `up to date (${local})`;
-    if (st && st.state === 'rolled-back' && st.version === latest) return `${latest} was rolled back before - not trying it again`;
     const res = await update();
     return `installing ${latest} (was ${local}): ${res.message || 'started'}`;
 }
