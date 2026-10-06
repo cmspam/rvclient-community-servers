@@ -13,6 +13,8 @@
 // file they have open; the next start loads the new one.
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import { basename, dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 
@@ -51,6 +53,39 @@ export function replacingCopyFileSync(src, dest, mode = 0) {
 }
 fs.copyFileSync = replacingCopyFileSync;
 
-// Make `import { spawn } from 'node:child_process'` (and copyFileSync from 'node:fs') in the
-// upstream modules see the wrappers.
+// RV_SHARE_STATS=off: the node agent's reports to the backend leave out its "box" section (this
+// machine's CPU and RAM use). Everything else in the reports is sent unchanged. Default: sent.
+export const SHARE_STATS = !/^(0|off|no|false)$/i.test(process.env.RV_SHARE_STATS || 'on');
+export function withoutBoxStats(body) {
+    const text = Buffer.isBuffer(body) ? body.toString('utf8') : body;
+    if (typeof text !== 'string' || !text.includes('"box"')) return body;
+    let obj;
+    try { obj = JSON.parse(text); } catch { return body; }
+    if (!obj || typeof obj !== 'object') return body;
+    let changed = false;
+    if ('box' in obj) { delete obj.box; changed = true; }
+    if (obj.health && typeof obj.health === 'object' && 'box' in obj.health) { delete obj.health.box; changed = true; }
+    return changed ? Buffer.from(JSON.stringify(obj)) : body;
+}
+function withoutStatsRequest(request) {
+    return function (...args) {
+        const req = request.apply(this, args);
+        const end = req.end;
+        req.end = function (data, ...rest) {
+            if (data != null && typeof data !== 'function' && /^\/nodes\//.test(req.path || '')) {
+                const out = withoutBoxStats(data);
+                if (out !== data && !req.headersSent) { req.setHeader('content-length', out.length); data = out; }
+            }
+            return end.call(this, data, ...rest);
+        };
+        return req;
+    };
+}
+if (!SHARE_STATS) {
+    http.request = withoutStatsRequest(http.request);
+    https.request = withoutStatsRequest(https.request);
+}
+
+// Make `import { spawn } from 'node:child_process'` (and copyFileSync from 'node:fs', request
+// from 'node:http') in the upstream modules see the wrappers.
 syncBuiltinESMExports();
