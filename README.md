@@ -129,6 +129,9 @@ sudo podman logs rvserver      # shows the admin password
 (For Docker, write `docker` instead of `podman`. The `,z` and `:Z` let the container read the files on
 SELinux systems such as Fedora or RHEL; elsewhere they are ignored.)
 
+If your Linux kernel has ntsync, also add `--device /dev/ntsync` before the image name (see
+[Faster thread synchronization](#faster-thread-synchronization-ntsync)).
+
 Then open `http://YOUR-SERVER-IP:8080`, log in with that password, choose your own password, and fill in
 the short setup form. It has the same questions as the installer.
 
@@ -169,6 +172,8 @@ Network=host
 Volume=/root/Rumbleverse-client-z.zip:/game.zip:ro,z
 Volume=/srv/rvserver:/data:Z
 AutoUpdate=registry
+# ntsync, if the kernel has it (see "Faster thread synchronization"):
+#AddDevice=/dev/ntsync
 # Memory sharing between modes (also switch KSM on, see "Saving memory"):
 #AddCapability=SYS_RESOURCE
 #Environment=RV_KSM=on
@@ -304,6 +309,27 @@ minutes). Leave some room for that: free RAM, zram (compressed swap in RAM) or a
 it on with `Enable-MMAgent -PageCombining` (as administrator, then restart).
 
 ---
+
+## Faster thread synchronization (ntsync)
+
+**Linux:** since Linux 6.14 the kernel has ntsync, which does Windows-style thread synchronization for
+Wine in the kernel instead of through the wineserver process. The image's Wine uses it when the
+container has `/dev/ntsync`. The installer switches it on by itself when the kernel has it. By hand:
+
+```sh
+sudo modprobe ntsync                                               # load it now
+echo ntsync | sudo tee /etc/modules-load.d/rvserver-ntsync.conf    # and after every reboot
+ls -l /dev/ntsync                                                  # it should exist now
+```
+
+Then start the container with `--device /dev/ntsync` (Quadlet: `AddDevice=/dev/ntsync`). To check that
+the server uses it, count the wineserver's ntsync handles (more than 0 means in use):
+
+```sh
+sudo ls -l /proc/$(pgrep -x wineserver | head -1)/fd | grep -c ntsync
+```
+
+Without ntsync the server works the same way, using Wine's older method.
 
 ## Ports
 

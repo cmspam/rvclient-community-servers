@@ -60,9 +60,22 @@ fi
 MEM_MB=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)
 KVER="$(uname -r)"; KMAJ=${KVER%%.*}; KMIN=${KVER#*.}; KMIN=${KMIN%%.*}
 KSM_KERNEL=0; { [ "$KMAJ" -gt 6 ] || { [ "$KMAJ" -eq 6 ] && [ "$KMIN" -ge 4 ]; }; } && [ -e /sys/kernel/mm/ksm/run ] && KSM_KERNEL=1
+# ntsync (Linux 6.14+): Wine's thread synchronization in the kernel instead of through wineserver.
+# Loaded here, kept loaded after a reboot, and passed to the container; skipped when unavailable.
+USE_NTSYNC=0
+if [ -e /dev/ntsync ]; then USE_NTSYNC=1
+elif [ "$IS_ROOT" = 1 ] && modprobe ntsync 2>/dev/null && [ -e /dev/ntsync ]; then USE_NTSYNC=1
+fi
+if [ "$USE_NTSYNC" = 1 ] && [ "$IS_ROOT" = 1 ] && ! grep -qsx ntsync /etc/modules-load.d/*.conf; then
+    mkdir -p /etc/modules-load.d && echo ntsync > /etc/modules-load.d/rvserver-ntsync.conf
+fi
 
 bold "1. Your machine"
 info "Container tool: $ENGINE    RAM: $((MEM_MB / 1024)).$(( (MEM_MB % 1024) * 10 / 1024 )) GB    Linux: $KVER"
+if [ "$USE_NTSYNC" = 1 ]; then info "ntsync: available, the server will use it (faster thread synchronization in Wine)."
+elif [ "$IS_ROOT" = 0 ]; then info "ntsync: not loaded (loading it needs root). The server works without it."
+else info "ntsync: not available on this Linux kernel (needs 6.14 or newer). The server works without it."
+fi
 if [ "$IS_ROOT" = 0 ]; then
     warn "Not running as root. That works, but memory sharing between modes (KSM) needs root."
     warn "Press Ctrl+C and run 'sudo bash install.sh' instead to use it."
@@ -251,6 +264,7 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         echo "Volume=$DATA:/data:Z"
         echo "AutoUpdate=registry"
         [ "$USE_KSM" = 1 ] && echo "AddCapability=SYS_RESOURCE"
+        [ "$USE_NTSYNC" = 1 ] && echo "AddDevice=/dev/ntsync"
         for e in "${ENV_ARGS[@]}"; do echo "Environment=\"$e\""; done
         echo
         echo "[Service]"
@@ -277,6 +291,7 @@ else
     RUN=($ENGINE run -d --name "$NAME" --restart=unless-stopped --network host
         -v "$ZIP:/game.zip:ro,z" -v "$DATA:/data:Z")
     [ "$USE_KSM" = 1 ] && RUN+=(--cap-add SYS_RESOURCE)
+    [ "$USE_NTSYNC" = 1 ] && RUN+=(--device /dev/ntsync)
     for e in "${ENV_ARGS[@]}"; do RUN+=(-e "$e"); done
     RUN+=("$IMAGE")
     "${RUN[@]}" >/dev/null
