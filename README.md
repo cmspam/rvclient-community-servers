@@ -148,6 +148,8 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_WEBUI` | `off` = no web admin page (use the terminal menu) |
 | `RV_WEBUI_PORT` | web page port (default `8080`) |
 | `RV_WEBUI_BIND` | address of the web page (default `0.0.0.0`; `127.0.0.1` = only through an SSH tunnel) |
+| `RV_KIT_AUTO_UPDATE` | `off` = do not install new server kits by itself (default `on`; see Updates below) |
+| `RV_KIT_UPDATE_HOURS` | hours between server kit checks (default `4`) |
 | `RV_NODE_ID`, `RV_NODE_KEY` | move an existing registration to this machine |
 
 ### As a Podman Quadlet (starts at boot, updates itself)
@@ -246,7 +248,11 @@ sudo podman restart rvserver        # restart everything
 sudo podman stop rvserver           # stop (the game servers shut down cleanly)
 ```
 
-Updates: the server kit (the game server software) updates itself through the rVclient backend. The
+Updates: the container checks for a newer server kit (the game server software) 5 minutes after it
+starts and then every 4 hours, and installs it through the kit's own updater, the same as `rv update`.
+Each mode restarts on the new kit only once it is empty (after 3 hours regardless), and the updater
+rolls back by itself if the new build crashes twice; a version that was rolled back is not tried again.
+`RV_KIT_AUTO_UPDATE=off` turns this off. The
 container image (Wine and the tools around it) updates itself with the Quadlet above; otherwise run
 `sudo podman pull ghcr.io/cmspam/rvclient-community-servers:latest` and re-create the container
 (or run the installer again). Your data stays in the data folder.

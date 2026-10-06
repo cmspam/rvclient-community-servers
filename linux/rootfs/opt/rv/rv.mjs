@@ -14,6 +14,7 @@ import { runSetup, optionsFromEnv, detectPublicIp, REGIONS } from './setup.mjs';
 import { createManager } from './manager.mjs';
 import { CONTROL_SOCK } from './ops.mjs';
 import { runCommand, menu, HELP } from './cli.mjs';
+import { startKitAutoUpdate } from './kit-update.mjs';
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const cmd = process.argv[2] || 'run';
@@ -59,6 +60,7 @@ async function run() {
     }
 
     startControlSocket(manager, setupJob);
+    startKitAutoUpdate(log);
     if (webUiEnabled) {
         const { ensureAuth } = await import('./webui/auth.mjs');
         const { startWebUi } = await import('./webui/server.mjs');
