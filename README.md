@@ -206,7 +206,7 @@ Open `http://YOUR-SERVER-IP:8080`. It has the same controls as the Windows rV Mo
 - each mode: on/off, state, players, uptime, memory, restart, stop, start
 - per-mode settings: bots per match, barge countdown, empty-match restart, starting stats, and the same
   switches as the Windows rV Modes app: bot navigation, removing invisible players (and its grace time),
-  removing players with no clothing
+  removing players with no clothing; also the held item fix
 - restart all modes, stop or start all servers
 - logs
 
@@ -247,6 +247,10 @@ sudo podman logs -f rvserver        # live log
 sudo podman restart rvserver        # restart everything
 sudo podman stop rvserver           # stop (the game servers shut down cleanly)
 ```
+
+Default settings: the container turns on **bot navigation** (`BotNavigation`) and the **held item fix**
+(`HeldItemFix`) in every mode's `Config.<mode>.ini` when it starts, but only where the setting is not in the
+file yet. A value you set yourself, also `false`, is kept: `rv set solo BotNavigation false`.
 
 Updates: the container checks for a newer server kit (the game server software) 5 minutes after it
 starts and then every 4 hours, and installs it through the kit's own updater, the same as `rv update`.

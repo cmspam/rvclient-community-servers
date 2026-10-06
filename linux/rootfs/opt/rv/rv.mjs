@@ -12,7 +12,7 @@ import { createInterface } from 'node:readline/promises';
 import { ensureDirs, isConfigured, readState, MODES } from './lib.mjs';
 import { runSetup, optionsFromEnv, detectPublicIp, REGIONS } from './setup.mjs';
 import { createManager } from './manager.mjs';
-import { CONTROL_SOCK } from './ops.mjs';
+import { CONTROL_SOCK, applySettingDefaults } from './ops.mjs';
 import { runCommand, menu, HELP } from './cli.mjs';
 import { startKitAutoUpdate } from './kit-update.mjs';
 
@@ -54,7 +54,7 @@ async function run() {
         Object.assign(setupJob, { running: true, error: '', done: false, log: [] });
         const say = msg => { setupJob.log.push(msg); log(`[setup] ${msg}`); };
         runSetup(opts, say)
-            .then(() => { setupJob.done = true; return manager.start(); })
+            .then(() => { setupJob.done = true; applySettingDefaults(log); return manager.start(); })
             .catch(e => { setupJob.error = e.message; say(`SETUP STOPPED: ${e.message}`); })
             .finally(() => { setupJob.running = false; });
     }
@@ -73,6 +73,7 @@ async function run() {
 
     if (isConfigured()) {
         log(`[rv] server ${readState().nodeId} is set up - starting`);
+        applySettingDefaults(log);
         await manager.start();
     } else {
         const opts = optionsFromEnv();

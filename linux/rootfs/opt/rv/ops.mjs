@@ -26,7 +26,31 @@ export const SETTING_INFO = {
     'Game Settings/OutfitCheck': { label: 'Remove invisible players', type: 'bool' },
     'Game Settings/OutfitGraceSec': { label: 'Invisible player grace (seconds)', type: 'int', min: 0, max: 600 },
     'Game Settings/KickNoClothing': { label: 'Remove players with no clothing', type: 'bool' },
+    'Game Settings/HeldItemFix': { label: 'Held item fix (clears items stuck in a player\'s hand)', type: 'bool' },
 };
+
+// Settings this image turns on for every mode. Written only where the key is not in the file yet, so
+// a value an operator set (also false) is kept.
+export const SETTING_DEFAULTS = {
+    'Game Settings/BotNavigation': 'true',
+    'Game Settings/HeldItemFix': 'true',
+};
+
+export function applySettingDefaults(log = () => {}) {
+    for (const m of MODES) {
+        const file = join(WIN64, `Config.${m.key}.ini`);
+        if (!existsSync(file)) continue;
+        const ini = readIni(file);
+        const bySection = {};
+        for (const [k, v] of Object.entries(SETTING_DEFAULTS)) {
+            if (!(k in ini)) (bySection[k.split('/')[0]] ||= {})[k.split('/')[1]] = v;
+        }
+        for (const [sec, vals] of Object.entries(bySection)) {
+            setIniValues(file, sec, vals);
+            log(`[rv] ${m.key}: default settings added: ${Object.entries(vals).map(([k, v]) => `${k}=${v}`).join(', ')}`);
+        }
+    }
+}
 const BOOL_VALUES = { true: 'true', on: 'true', yes: 'true', 1: 'true', false: 'false', off: 'false', no: 'false', 0: 'false' };
 const EDITABLE_SECTIONS = ['Game Settings', 'Player Settings'];
 const LOCKED = new Set(['Game Settings/GameMode', 'Game Settings/RequireMatchmadeJoin']);   // written by setup
