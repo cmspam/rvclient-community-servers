@@ -8,6 +8,11 @@
 #   sudo bash install.sh
 #
 # Running it again later changes nothing that is already set up; it can re-create the container.
+#
+# Every question can be answered in advance through an environment variable (RV_GAME_ZIP,
+# RV_DATA_DIR, RV_EDITION=community|private, RV_SETUP_CODE, RV_CONTACT, RV_NAME, RV_PUBLIC_IP,
+# RV_MODES=solo,duos,..., RV_SLIM=on|off, RV_KSM=on|off, RV_WEBUI=on|off). With RV_UNATTENDED=1 it never asks:
+# unanswered questions take the suggested answer.
 set -euo pipefail
 
 IMAGE="${RV_IMAGE:-ghcr.io/cmspam/rvclient-community-servers:latest}"
@@ -20,14 +25,18 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 warn() { printf '\033[33m  %s\033[0m\n' "$*"; }
 die() { printf '\033[31m\n  %s\033[0m\n\n' "$*" >&2; exit 1; }
-ask() {   # ask "question" "default" -> REPLY
-    local q="$1" def="${2:-}"
+UNATTENDED=0; [[ "${RV_UNATTENDED:-}" =~ ^(1|yes|true|on)$ ]] && UNATTENDED=1
+ask() {   # ask "question" "default" ["preset answer"] -> REPLY
+    local q="$1" def="${2:-}" preset="${3:-}"
+    if [ -n "$preset" ]; then REPLY="$preset"; info "$q: $REPLY"; return; fi
+    if [ "$UNATTENDED" = 1 ]; then REPLY="$def"; info "$q: $REPLY"; return; fi
     if [ -n "$def" ]; then read -r -p "  $q [$def]: " REPLY </dev/tty; else read -r -p "  $q: " REPLY </dev/tty; fi
     REPLY="${REPLY:-$def}"
 }
-yesno() { ask "$1 (y/n)" "$2"; [[ "$REPLY" =~ ^[Yy] ]]; }
+yesno() { ask "$1 (y/n)" "$2" "${3:-}"; [[ "$REPLY" =~ ^[Yy] ]]; }
+onoff() { case "${1:-}" in on|yes|y|1|true) echo y ;; off|no|n|0|false) echo n ;; esac; }   # RV_KSM/RV_WEBUI -> y/n
 
-[ -t 0 ] || [ -e /dev/tty ] || die "Run this script in a terminal: bash install.sh"
+[ "$UNATTENDED" = 1 ] || [ -t 0 ] || [ -e /dev/tty ] || die "Run this script in a terminal: bash install.sh"
 
 echo
 bold "Rumbleverse server installer"
@@ -89,11 +98,17 @@ for f in "${RV_GAME_ZIP:-}" ./Rumbleverse*.zip ~/Rumbleverse*.zip ~/Downloads/Ru
     [ -n "$f" ] && [ -f "$f" ] && { ZIP="$(readlink -f "$f")"; break; }
 done
 while :; do
-    ask "Where is your Rumbleverse game zip?" "$ZIP"
+    ask "Where is your Rumbleverse game zip?" "$ZIP" "${RV_GAME_ZIP:-}"
     ZIP="$(readlink -f "${REPLY/#\~/$HOME}" 2>/dev/null || true)"
-    if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then warn "No file there. Type the full path, e.g. /root/Rumbleverse-client-z.zip"; ZIP=""; continue; fi
+    if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+        [ "$UNATTENDED" = 1 ] || [ -n "${RV_GAME_ZIP:-}" ] && die "No game zip at ${RV_GAME_ZIP:-the usual places}."
+        warn "No file there. Type the full path, e.g. /root/Rumbleverse-client-z.zip"; ZIP=""; continue
+    fi
     SIZE_MB=$(( $(stat -c %s "$ZIP") / 1048576 ))
-    if [ "$SIZE_MB" -lt 5000 ]; then warn "That file is only ${SIZE_MB} MB - the game zip is about 11 GB."; ZIP=""; continue; fi
+    if [ "$SIZE_MB" -lt 5000 ]; then
+        [ "$UNATTENDED" = 1 ] || [ -n "${RV_GAME_ZIP:-}" ] && die "$ZIP is only ${SIZE_MB} MB - the game zip is about 11 GB."
+        warn "That file is only ${SIZE_MB} MB - the game zip is about 11 GB."; ZIP=""; continue
+    fi
     break
 done
 info "Using $ZIP (${SIZE_MB} MB)"
@@ -105,7 +120,7 @@ echo
 # ---------------------------------------------------------------- data folder
 bold "3. Where to keep the server's files"
 DEF_DATA="$HOME/rvserver"; [ "$IS_ROOT" = 1 ] && DEF_DATA="/srv/rvserver"
-ask "Folder for the server (about 25 GB)" "$DEF_DATA"
+ask "Folder for the server (about 25 GB)" "$DEF_DATA" "${RV_DATA_DIR:-}"
 DATA="${REPLY/#\~/$HOME}"
 mkdir -p "$DATA"
 DATA="$(readlink -f "$DATA")"
@@ -116,57 +131,67 @@ echo
 ALREADY=0
 [ -f "$DATA/state/rv.json" ] && grep -q '"nodeId": "node-' "$DATA/state/rv.json" 2>/dev/null && ALREADY=1
 
-# ---------------------------------------------------------------- server kind
 ENV_ARGS=()
+# ---------------------------------------------------------------- RAM saving
+bold "4. RAM saving"
+info "The game server keeps graphics and sound data it never uses. RAM saving frees it, so each"
+info "mode needs about 2.5 GB instead of 3.9 GB. It changes nothing for players."
+USE_SLIM=1; yesno "Switch RAM saving on? (recommended)" "y" "$(onoff "${RV_SLIM:-}")" || USE_SLIM=0
+echo
+
+# ---------------------------------------------------------------- server kind
 if [ "$ALREADY" = 1 ]; then
-    bold "4. Server already set up"
+    bold "5. Server already set up"
     info "This folder already holds a set-up server; its settings are kept."
     echo
 else
-    bold "4. What kind of server?"
+    bold "5. What kind of server?"
     info "  1) Community server: public. Players everywhere join it through matchmaking."
     info "     Needs a VPS or dedicated server, and the rVclient admins approve it first."
     info "  2) Private server: only you and the friends you share it with."
-    ask "Choose 1 or 2" "1"
+    case "${RV_EDITION:-}" in community) PRE=1 ;; private) PRE=2 ;; *) PRE="" ;; esac
+    ask "Choose 1 or 2" "1" "$PRE"
     if [ "$REPLY" = 2 ]; then
         EDITION=private
         echo
         info "Get a setup code in your rVclient launcher:"
         info "Server Status > My private servers > Set up a private server (valid 30 minutes)."
-        while :; do ask "Setup code (like ABCDE-FGH23)" ""; [ -n "$REPLY" ] && break; done
+        while :; do ask "Setup code (like ABCDE-FGH23)" "" "${RV_SETUP_CODE:-}"; [ -n "$REPLY" ] && break; [ "$UNATTENDED" = 1 ] && die "A private server needs RV_SETUP_CODE."; done
         ENV_ARGS+=(RV_SETUP_CODE="$REPLY")
-        ask "Name for your server (you and your friends see it)" "Linux private server"
+        ask "Name for your server (you and your friends see it)" "Linux private server" "${RV_NAME:-}"
         ENV_ARGS+=(RV_NAME="$REPLY")
     else
         EDITION=community
         echo
         info "The admins contact you on Discord about the approval."
-        while :; do ask "Your Discord name" ""; [ -n "$REPLY" ] && break; done
+        while :; do ask "Your Discord name" "" "${RV_CONTACT:-}"; [ -n "$REPLY" ] && break; [ "$UNATTENDED" = 1 ] && die "A community server needs RV_CONTACT (your Discord name)."; done
         ENV_ARGS+=(RV_CONTACT="$REPLY")
-        ask "Name for your server (only the admins see it)" ""
+        ask "Name for your server (only the admins see it)" "" "${RV_NAME:-}"
         [ -n "$REPLY" ] && ENV_ARGS+=(RV_NAME="$REPLY")
     fi
     ENV_ARGS+=(RV_EDITION="$EDITION")
     echo
 
     # ------------------------------------------------------------ public IP
-    bold "5. Public IP address"
+    bold "6. Public IP address"
     IP="$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || true)"
     if [ -n "$IP" ]; then info "Detected: $IP (this is the address players connect to)"; fi
-    ask "Public IPv4 address" "$IP"
+    ask "Public IPv4 address" "$IP" "${RV_PUBLIC_IP:-}"
     [[ "$REPLY" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "That is not an IPv4 address."
     ENV_ARGS+=(RV_PUBLIC_IP="$REPLY")
     PUBLIC_IP="$REPLY"
     echo
 
     # ------------------------------------------------------------ modes
-    bold "6. Which game modes?"
-    # About 3.8 GB for the first mode; with memory sharing (KSM) about 1.7 GB for each further one.
+    bold "7. Which game modes?"
+    # Per mode about 3.9 GB, or 2.5 GB with RAM saving (2.9 GB while it loads); with memory
+    # sharing (KSM) each further mode needs about 1.8 GB either way.
     USABLE=$(( MEM_MB - 900 ))
-    FIT_PLAIN=$(( USABLE / 3900 )); [ "$FIT_PLAIN" -lt 1 ] && FIT_PLAIN=1
+    if [ "$USE_SLIM" = 1 ]; then FIRST=2900; EACH=2500; else FIRST=3900; EACH=3900; fi
+    FIT_PLAIN=$(( 1 + (USABLE - FIRST) / EACH )); [ "$USABLE" -lt "$FIRST" ] && FIT_PLAIN=1
     FIT_KSM=$FIT_PLAIN
-    if [ "$KSM_KERNEL" = 1 ] && [ "$IS_ROOT" = 1 ]; then
-        FIT_KSM=$(( 1 + (USABLE - 3900 - 1800) / 1800 )); [ "$FIT_KSM" -lt "$FIT_PLAIN" ] && FIT_KSM=$FIT_PLAIN
+    if [ "$KSM_KERNEL" = 1 ] && [ "$IS_ROOT" = 1 ] && [ "$USABLE" -ge "$FIRST" ]; then
+        FIT_KSM=$(( 1 + (USABLE - FIRST) / 1800 )); [ "$FIT_KSM" -lt "$FIT_PLAIN" ] && FIT_KSM=$FIT_PLAIN
     fi
     [ "$FIT_KSM" -gt 5 ] && FIT_KSM=5; [ "$FIT_PLAIN" -gt 5 ] && FIT_PLAIN=5
     info "Each mode is its own game server. With $((MEM_MB / 1024)).$(( (MEM_MB % 1024) * 10 / 1024 )) GB of RAM about $FIT_PLAIN fit"
@@ -174,7 +199,14 @@ else
     for i in 0 1 2 3 4; do info "  $((i + 1))) ${MODE_LABEL[$i]}"; done
     if [ "$EDITION" = private ]; then DEF_MODES="2"; else DEF_MODES="1"; [ "$FIT_KSM" -ge 2 ] && DEF_MODES="1 2"; fi
     [ "$FIT_KSM" -ge 5 ] && DEF_MODES="1 2 3 4 5"
-    ask "Modes to run (numbers separated by spaces)" "$DEF_MODES"
+    PRE=""
+    if [ -n "${RV_MODES:-}" ]; then
+        for m in ${RV_MODES//,/ }; do
+            for i in 0 1 2 3 4; do [ "${MODES_ALL[$i]}" = "$m" ] && PRE="${PRE:+$PRE }$((i + 1))"; done
+        done
+        [ -n "$PRE" ] || die "RV_MODES lists no known mode (use solo, playground, duos, trios, squads)."
+    fi
+    ask "Modes to run (numbers separated by spaces)" "$DEF_MODES" "$PRE"
     MODES=""
     for n in $REPLY; do
         [[ "$n" =~ ^[1-5]$ ]] || die "Use the numbers 1 to 5."
@@ -187,14 +219,15 @@ else
 fi
 
 # ---------------------------------------------------------------- memory sharing (KSM)
-bold "7. Memory sharing (KSM)"
+bold "8. Memory sharing (KSM)"
 USE_KSM=0
 if [ "$KSM_KERNEL" = 0 ]; then info "Not available on this Linux kernel (needs 6.4 or newer). Skipped."
 elif [ "$IS_ROOT" = 0 ]; then info "Needs root. Skipped (run the installer with sudo to use it)."
 else
-    info "Several modes share most of their memory. With this on, each extra mode needs about"
-    info "1.7 GB instead of 3.8 GB. It costs a little CPU."
-    if yesno "Switch memory sharing on?" "y"; then
+    info "Several modes share part of their memory. With this on, each extra mode needs about"
+    info "1.8 GB. It costs some CPU, so it is only worth it with more than one mode."
+    DEF_KSM=y; [ "${COUNT:-2}" -le 1 ] && DEF_KSM=n
+    if yesno "Switch memory sharing on?" "$DEF_KSM" "$(onoff "${RV_KSM:-}")"; then
         USE_KSM=1
         cat > /etc/tmpfiles.d/rvserver-ksm.conf <<'EOF'
 # Kernel Samepage Merging for the Rumbleverse server (identical memory of several modes kept once).
@@ -210,10 +243,10 @@ fi
 echo
 
 # ---------------------------------------------------------------- web admin page
-bold "8. Web admin page"
+bold "9. Web admin page"
 info "A password-protected page to manage the server from your browser (port $WEB_PORT)."
 info "Everything can also be done in the terminal with: $ENGINE exec -it $NAME rv menu"
-USE_WEB=1; yesno "Turn on the web admin page?" "y" || USE_WEB=0
+USE_WEB=1; yesno "Turn on the web admin page?" "y" "$(onoff "${RV_WEBUI:-}")" || USE_WEB=0
 echo
 
 # ---------------------------------------------------------------- firewall
@@ -232,8 +265,9 @@ if [ "$IS_ROOT" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------- start
-bold "9. Starting the server"
+bold "10. Starting the server"
 [ "$USE_KSM" = 1 ] && ENV_ARGS+=(RV_KSM=on)
+[ "$USE_SLIM" = 0 ] && ENV_ARGS+=(RV_SLIM=off)
 [ "$USE_WEB" = 0 ] && ENV_ARGS+=(RV_WEBUI=off)
 [ "$WEB_PORT" != 8080 ] && ENV_ARGS+=(RV_WEBUI_PORT="$WEB_PORT")
 

@@ -12,11 +12,11 @@ Host your own Rumbleverse server with rVclient, on **Windows** or **Linux**.
 
 - You need **your own copy of Rumbleverse** (the game files). This project never provides game files.
 - Players need the **rVclient launcher 1.7.49 or newer**.
-- Each game mode is its own server and needs about **4 GB of RAM** (less on Linux with memory sharing, see below).
+- Each game mode is its own server and needs about **4 GB of RAM** (about 2.5 GB on Linux, see [Saving memory](#saving-memory)).
 - Server updates arrive by themselves through the rVclient backend.
 
 **Contents:** [Windows](#windows) · [Linux](#linux) · [Managing the server](#managing-the-server-on-linux) ·
-[Saving memory](#saving-memory-with-several-modes) · [Ports](#ports) · [Removing a server](#removing-a-server) · [Problems](#problems)
+[Saving memory](#saving-memory) · [Ports](#ports) · [Removing a server](#removing-a-server) · [Problems](#problems)
 
 ---
 
@@ -64,12 +64,19 @@ software inside it is the official one and updates itself exactly as on Windows.
 
 - A 64-bit (x86_64) Linux VPS or server
 - **Podman** or **Docker** (see step 1)
-- RAM: about 4 GB for one mode; with memory sharing about 1.7 GB for each further mode
+- RAM: about 3 GB for one mode, about 2.5 GB for each further mode (1.8 GB with memory sharing)
 - Disk: about 25 GB free
 - A public IPv4 address; **UDP 7777-7781** reachable (also in your provider's firewall, if it has one)
 - Your Rumbleverse game zip (about 11 GB)
 
-### Easiest way: the installer
+### Easiest way: from your own computer, onto a fresh VPS
+
+[rvserver-oneclick](https://github.com/cmspam/rvserver-oneclick) sets up a whole VPS from your PC: a
+Windows program (or a script for Linux, macOS and WSL) that installs Fedora CoreOS on a fresh Debian or
+Ubuntu VPS, uploads your game zip and runs the installer below. You only need the VPS's root password or
+SSH key, and your game zip. It erases the VPS.
+
+### On a server you already have: the installer
 
 The installer asks a few questions (each with a suggested answer you can accept with Enter), checks the
 machine, and starts everything. Log in to your server and run these commands.
@@ -147,7 +154,8 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_MODES` | any of `solo,playground,duos,trios,squads`, or `all` |
 | `RV_PUBLIC_IP` | address players connect to (detected if empty) |
 | `RV_REGION` | e.g. `ap-northeast-1` (measured by ping if empty) |
-| `RV_KSM` | `on` = memory sharing between modes (see [Saving memory](#saving-memory-with-several-modes)) |
+| `RV_SLIM` | `off` = no RAM saving (default `on`; see [Saving memory](#saving-memory)) |
+| `RV_KSM` | `on` = memory sharing between modes (see [Saving memory](#saving-memory)) |
 | `RV_WEBUI` | `off` = no web admin page (use the terminal menu) |
 | `RV_WEBUI_PORT` | web page port (default `8080`) |
 | `RV_WEBUI_BIND` | address of the web page (default `0.0.0.0`; `127.0.0.1` = only through an SSH tunnel) |
@@ -273,18 +281,36 @@ Data folder contents: `server/` (game and server kit), `state/` (registration an
 
 ---
 
-## Saving memory with several modes
+## Saving memory
 
-Each mode is a separate game server, and the servers hold a lot of identical memory.
+### RAM saving (Linux, on by default)
 
-**Linux:** the kernel can keep identical memory only once (KSM, Kernel Samepage Merging). Measured with
-all five modes running:
+The game server is the game client started without graphics and sound, and it still loads and keeps
+everything a player's PC needs for them. The Linux image frees that data while the map loads:
 
-| | Without memory sharing | With memory sharing |
-|---|---|---|
-| All five modes | about 19 GB | about 11 GB |
-| First mode | about 3.8 GB | about 3.8 GB |
-| Each further mode | about 3.8 GB | about 1.7 GB |
+- `rvslim.dll` (source: [`linux/src/rvslim.c`](linux/src/rvslim.c)) is listed in `DList.ini`, so the mod
+  loader starts it with the server. It releases mesh render buffers, distance fields, texture and sound
+  data. Collision, animation and gameplay data are not touched. It only acts on the game build it was
+  made for and does nothing on any other.
+- Your own `rest-api-client.dll` (part of the game files) gets a two-byte change, so its matchmaking table
+  starts empty instead of holding 64 teams that a server never fills (433 MB). Only the known original
+  file is changed; nothing from the game is included in this project.
+
+Both are put back in place before every server start, so server kit updates do not undo them.
+`RV_SLIM=off` turns it off and puts the original `DList.ini` entry and `rest-api-client.dll` back.
+
+### Memory sharing between modes (KSM)
+
+Each mode is a separate game server, and the servers hold a lot of identical memory. The kernel can keep
+identical memory only once (KSM, Kernel Samepage Merging). Measured with all five modes running:
+
+| | Neither | RAM saving | Memory sharing | Both |
+|---|---|---|---|---|
+| First mode | about 3.9 GB | about 2.5 GB | about 3.9 GB | about 2.5 GB |
+| Each further mode | about 3.9 GB | about 2.5 GB | about 1.7 GB | about 1.8 GB |
+| All five modes | about 19 GB | about 12 GB | about 11 GB | about 10 GB |
+
+With RAM saving, memory sharing mostly helps with three modes or more.
 
 The installer sets it up when you answer yes. By hand (Linux 6.4 or newer, container run as root):
 
