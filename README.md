@@ -417,7 +417,8 @@ Without ntsync the server works the same way, using Wine's older method.
 
 A server needs a minute or more to start its next match. With enough memory for two game servers, two
 servers of the same mode can take turns instead: while one runs a match, the other has already started
-and waits in its lobby, with no network at all. When the round is over, they swap: the waiting server gets
+and waits in its lobby, with no network at all. A few seconds after the round is over, once the players
+have their results, they swap: the waiting server gets
 the game port and its connection, and the next match starts at once. The other one restarts and becomes
 the one waiting (players still on the old server's end-of-match screen lose that connection, which by
 then only keeps the screen open). Both use the same public address and game port and the same server identity, so to the

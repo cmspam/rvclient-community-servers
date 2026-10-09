@@ -4,9 +4,9 @@
 // data folders read-only). The active server gets the public game port, forwarded statelessly: each
 // packet's address is rewritten, so a swap applies to the very next packet and leaves no connection
 // state behind. Only the active server can reach the internet. The standby has no connectivity: it
-// boots into its lobby and waits there without talking to the backend. When the active server's round is
-// over (players queue for the next match from the end-of-match screen, still connected to the old
-// server, which only keeps that connection alive until it restarts), or it stops for any other reason (a crash, a restart by the supervisor, the backend or an update:
+// boots into its lobby and waits there without talking to the backend. A few seconds after the active
+// server's round is over (once the players have their results: they queue for the next match from the
+// end-of-match screen, still connected to the old server), or when it stops for any other reason (a crash, a restart by the supervisor, the backend or an update:
 // its process ends or a new boot starts), and the standby is in its lobby, they swap: the
 // standby becomes active and takes the next match at once, and the old one restarts as the new standby.
 // When the standby is not ready, nothing changes and the active server restarts the normal way.
@@ -24,6 +24,8 @@
 //   RV_SWAP_A_HOST/_B_HOST their data folders on the host (to find their processes), default
 //                          /var/srv/rvsolo-a and /var/srv/rvsolo-b
 //   RV_SWAP_INSTANCE       server instance to watch, default solo-01
+//   RV_SWAP_ROUND_END_DELAY_SEC  seconds after Server.dll's "round over" before the swap, default 5 (the
+//                          players must get their results first)
 //   RV_SWAP_STATE          state folder, default /swap/state
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -33,6 +35,7 @@ const env = process.env;
 const PUB = env.RV_PUBLIC_IP || '';
 const PORT = Number(env.RV_SWAP_PORT) || 7777;
 const INSTANCE = env.RV_SWAP_INSTANCE || 'solo-01';
+const ROUND_END_DELAY_MS = (Number(env.RV_SWAP_ROUND_END_DELAY_SEC) || 5) * 1000;
 const SIDE = {
     a: { ip: env.RV_SWAP_A_IP || '10.90.0.10', dir: env.RV_SWAP_A_DIR || '/swap/a', host: env.RV_SWAP_A_HOST || '/var/srv/rvsolo-a' },
     b: { ip: env.RV_SWAP_B_IP || '10.90.0.11', dir: env.RV_SWAP_B_DIR || '/swap/b', host: env.RV_SWAP_B_HOST || '/var/srv/rvsolo-b' },
@@ -129,17 +132,20 @@ async function run() {
     let act = active();
     apply(act);
     log(`active: ${act}, standby: ${other(act)} (public ${PUB} UDP ${PORT})`);
-    let off = size(trace(act)), waiting = '', goneSince = 0;
+    let off = size(trace(act)), waiting = '', goneSince = 0, roundOverAt = 0;
     for (;;) {
         await new Promise(r => setTimeout(r, 1000));
         const f = trace(act), s = size(f);
         if (s < off) off = 0;
         if (s > off) {
             const text = readRange(f, off, s); off = s;
-            if (!waiting && /game flow 3 -> 4|terminating for restart/.test(text)) waiting = 'match over';
+            if (!waiting && /\[ROUNDEND\] round over/.test(text) && !roundOverAt) roundOverAt = Date.now();
+            if (!waiting && /terminating for restart/.test(text)) waiting = 'match over';
             else if (!waiting && /\*\*\* CRASH|boot attempts exhausted/.test(text)) waiting = 'crashed';
             else if (!waiting && /DllMain: begin/.test(text)) waiting = 'restarted';
         }
+        // The round is over: the players get their results (end-of-match screen) first, then the port moves.
+        if (!waiting && roundOverAt && Date.now() - roundOverAt >= ROUND_END_DELAY_MS) waiting = 'round over';
         if (!waiting) {
             // its process ended without a word in the trace (killed: health check, backend, update, rv restart)
             goneSince = running(act) ? 0 : (goneSince || Date.now());
@@ -150,10 +156,10 @@ async function run() {
         if (ready(sb)) {
             try { apply(sb); } catch (e) { log(`could not swap: ${e.message}`); continue; }
             log(`${waiting} on ${act} - swapped: ${sb} is active, ${act} restarts as standby`);
-            act = sb; off = size(trace(act)); waiting = ''; goneSince = 0;
+            act = sb; off = size(trace(act)); waiting = ''; goneSince = 0; roundOverAt = 0;
         } else if (ready(act)) {
             log(`${waiting} on ${act} - standby ${sb} was not ready; ${act} restarted and stays active`);
-            waiting = ''; goneSince = 0;
+            waiting = ''; goneSince = 0; roundOverAt = 0;
         }
     }
 }
