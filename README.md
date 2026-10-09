@@ -348,7 +348,7 @@ before every server start:
   yet. Attacks, deliberate misses, dodges and teamwork stay as the game made them. It only acts on the game
   build it was made for.
 - Your own `Server.dll` (part of the server kit) gets one number changed: paths built at once, 2 to 1024
-  (8 on machines with 2 CPUs or fewer). Only when the instruction that sets it is found exactly once;
+  (the engine's own default). Only when the instruction that sets it is found exactly once;
   otherwise it is left alone. Nothing from the server kit is included in this project.
 - Bot navigation is switched on in each battle royale mode's config (`BotNavigation=true`,
   `BotNavRadius=100`), so it overrides the admin panel's bot navigation switch while this is on.
@@ -356,7 +356,7 @@ before every server start:
 | Variable | Default | |
 |---|---|---|
 | `RV_BOTS` | `on` | `off` takes `rvbots.dll` out and sets `Server.dll` back to 2 (the config is left as it is) |
-| `RV_BOT_NAV_JOBS` | 1024, or 8 on 2 CPUs or fewer | paths built at once |
+| `RV_BOT_NAV_JOBS` | 1024 | paths built at once |
 | `RV_BOT_NAV_RADIUS` | 100 | metres around each bot that get paths |
 | `RVBOTS_PLAYER_SEARCH_RADIUS` | 150 | metres in which bots look for players |
 | `RVBOTS_SIGHT_RADIUS` | 40 | metres bots see |

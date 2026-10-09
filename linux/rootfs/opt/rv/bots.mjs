@@ -9,13 +9,12 @@
 //     RVBOTS_PLAYER_SEARCH_RADIUS, RVBOTS_SIGHT_RADIUS, RVBOTS_SIGHT_ANGLE and
 //     RVBOTS_KEEP_UNREACHABLE_PLAYERS change those values (the DLL reads them itself).
 //   - Server.dll (in the server kit, not in this image) gets the number of paths it lets the engine
-//     build at once raised from 2 to RV_BOT_NAV_JOBS (default: 1024, or 8 on 2 CPUs or fewer). Only
+//     build at once raised from 2 to RV_BOT_NAV_JOBS (default 1024, the engine's own default). Only
 //     when the instruction that sets it is found exactly once; otherwise the file is left alone.
 //   - Bot navigation is switched on in every battle royale mode's config (BotNavigation=true,
 //     BotNavRadius=RV_BOT_NAV_RADIUS, default 100 metres).
 // RV_BOTS=off takes the DLL out of DList.ini and sets Server.dll back to 2; the config is left as it is.
 import fs from 'node:fs';
-import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { dlistAdd, dlistRemove } from './addons.mjs';
@@ -32,10 +31,9 @@ function replace(dest, data) {
     fs.renameSync(tmp, dest);
 }
 
-export function navJobs(env = process.env, cpus = os.availableParallelism?.() ?? os.cpus().length) {
+export function navJobs(env = process.env) {
     const n = Number(env.RV_BOT_NAV_JOBS);
-    if (Number.isInteger(n) && n >= 1 && n <= 4096) return n;
-    return cpus <= 2 ? 8 : 1024;
+    return Number.isInteger(n) && n >= 1 && n <= 4096 ? n : 1024;
 }
 
 // Server.dll: mov dword [rbp-0x78], <jobs>; lea r8, [rbp-0x78]; mov rdx, rbx; mov rcx, [rip+...]
