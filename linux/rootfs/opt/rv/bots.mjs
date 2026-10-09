@@ -1,4 +1,4 @@
-// Better bots (RV_BOTS, default on). Run right before each game server starts, so server kit updates
+// Better bots (RV_BOTS=on, default off: on a 2-CPU server the path building caused hitches). Run right before each game server starts, so server kit updates
 // do not undo it.
 //
 // The battle royale bots run the game's own AI, which on a server mostly stands still or jumps in
@@ -13,13 +13,14 @@
 //     when the instruction that sets it is found exactly once; otherwise the file is left alone.
 //   - Bot navigation is switched on in every battle royale mode's config (BotNavigation=true,
 //     BotNavRadius=RV_BOT_NAV_RADIUS, default 100 metres).
-// RV_BOTS=off takes the DLL out of DList.ini and sets Server.dll back to 2; the config is left as it is.
+// When off (the default), the DLL is taken out of DList.ini and Server.dll set back to 2; the config is
+// left as it is.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
 import { dlistAdd, dlistRemove } from './addons.mjs';
 
-export const BOTS = !/^(0|off|no|false)$/i.test(process.env.RV_BOTS || 'on');
+export const BOTS = /^(1|on|yes|true)$/i.test(process.env.RV_BOTS || 'off');
 const DLL_SRC = process.env.RV_BOTS_DLL || '/opt/rv/lib/rvbots.dll';
 const ORIGINAL_JOBS = 2;
 const MODES = ['solo', 'duos', 'trios', 'squads'];

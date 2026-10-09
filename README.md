@@ -336,12 +336,15 @@ it on with `Enable-MMAgent -PageCombining` (as administrator, then restart).
 
 ---
 
-## Better bots (Linux, on by default)
+## Better bots (Linux, off by default)
+
+Experimental, and off by default: on a server with 2 CPUs, building the bots' paths caused short hitches
+every few seconds while the bots spread out after the landing. `RV_BOTS=on` switches it on.
 
 The battle royale bots run the game's own AI. On a server they mostly stand still or jump in place: they
 see 5 m ahead, look for players only within 30 m, and their paths are built while the game runs, which
 `Server.dll` limits to 2 pieces at a time, far too slow for 20 or 30 bots. The Linux image changes that
-before every server start:
+before every server start, when switched on:
 
 - `rvbots.dll` (source: [`linux/src/rvbots.c`](linux/src/rvbots.c)) is listed in `DList.ini`. It lets bots
   look for players within 150 m, see 40 m in a 180 degree view, and go after players they have no path to
@@ -355,7 +358,7 @@ before every server start:
 
 | Variable | Default | |
 |---|---|---|
-| `RV_BOTS` | `on` | `off` takes `rvbots.dll` out and sets `Server.dll` back to 2 (the config is left as it is) |
+| `RV_BOTS` | `off` | `on` switches it on; off takes `rvbots.dll` out and sets `Server.dll` back to 2 (the config is left as it is) |
 | `RV_BOT_NAV_JOBS` | 1024 | paths built at once |
 | `RV_BOT_NAV_RADIUS` | 100 | metres around each bot that get paths |
 | `RVBOTS_PLAYER_SEARCH_RADIUS` | 150 | metres in which bots look for players |
