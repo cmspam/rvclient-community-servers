@@ -237,7 +237,10 @@ else
         NEED=$(( (COUNT + $(echo "$SWAP" | tr ',' '\n' | sort -u | wc -l)) * 2500 ))
         [ "$NEED" -gt "$MEM_MB" ] && warn "That is about $((NEED / 1024)) GB for all servers; this machine has $((MEM_MB / 1024)) GB."
         ENV_ARGS+=(RV_SWAP="$SWAP")
-        info "Server pairs: $SWAP."
+        # the container forwards between its servers and the internet
+        printf '# Server pairs (RV_SWAP): the Rumbleverse container forwards between its servers and the internet.\nnet.ipv4.ip_forward = 1\n' > /etc/sysctl.d/80-rvserver-forward.conf
+        sysctl -q -w net.ipv4.ip_forward=1
+        info "Server pairs: $SWAP (IP forwarding switched on, also after a reboot)."
     fi
 fi
 echo

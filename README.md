@@ -439,7 +439,8 @@ Environment=RV_SWAP=solo,duos
 ```
 
 With Docker: `--network host --cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt apparmor=unconfined`.
-The host needs IP forwarding on (`net.ipv4.ip_forward=1`, which Podman and Docker normally set). Each
+The host needs IP forwarding on (`net.ipv4.ip_forward=1`; the installer switches it on for pairs, and Podman
+or Docker networks usually have it on already, but a host with only host-network containers may not). Each
 server of a pair gets its own network namespace and its own copy of the server folder under
 `data/swap/<mode>-a` and `-b` (on a filesystem with reflink copies, such as XFS or Btrfs, the copy takes
 no extra space; otherwise the game content is shared through hard links). A mode's settings and add-ons
