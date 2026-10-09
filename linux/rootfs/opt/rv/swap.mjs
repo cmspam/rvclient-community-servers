@@ -9,7 +9,10 @@
 // end-of-match screen, still connected to the old server), or when it stops for any other reason (a crash, a restart by the supervisor, the backend or an update:
 // its process ends or a new boot starts), and the standby is in its lobby, they swap: the
 // standby becomes active and takes the next match at once, and the old one restarts as the new standby.
-// When the standby is not ready, nothing changes and the active server restarts the normal way.
+// When the standby is not ready, nothing changes and the active server restarts the normal way. A server
+// that comes up with parts of the map missing is restarted (the standby while it waits, the active one by
+// swapping it out, or restarting it when the standby is not ready), and so is a start that froze, stalled
+// or takes far too long.
 //
 //   rv swap run            the controller
 //   rv swap status         which side is active, and whether the standby is ready
@@ -103,16 +106,17 @@ function apply(side) {
 const active = () => { try { return fs.readFileSync(STATE, 'utf8').trim() === 'b' ? 'b' : 'a'; } catch { return 'a'; } };
 
 // The game server process of a side: a process of this instance whose /data is that side's folder.
-function running(side) {
+const running = side => gamePid(side) > 0;
+function gamePid(side) {
     const host = basename(SIDE[side].host);
     for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
         try {
             if (!fs.readFileSync(`/proc/${pid}/cmdline`, 'latin1').includes(`RVInstance=${INSTANCE}`)) continue;
             const mounts = fs.readFileSync(`/proc/${pid}/mountinfo`, 'latin1');
-            if (mounts.split('\n').some(l => { const f = l.split(' '); return f[4] === '/data' && basename(f[3]) === host; })) return true;
+            if (mounts.split('\n').some(l => { const f = l.split(' '); return f[4] === '/data' && basename(f[3]) === host; })) return Number(pid);
         } catch { /* gone */ }
     }
-    return false;
+    return 0;
 }
 
 // The container's cgroup (on the host) of a side: from any process whose /data is that side's folder.
@@ -178,11 +182,52 @@ function currentBoot(side) {
     return i < 0 ? '' : text.slice(i);
 }
 const ENDED = /terminating for restart|\*\*\* CRASH|boot attempts exhausted/;
-// In its lobby: running, and its current boot reported joinable and has not ended.
+// Sub-levels its current boot gave up on ("forced sub-levels settled ... N not loaded"): players would fall
+// through the missing parts of the map.
+function missingSubLevels(boot) {
+    const m = /forced sub-levels settled[^\n]*?(\d+) not loaded/.exec(boot);
+    return m ? Number(m[1]) : 0;
+}
+// In its lobby: running, and its current boot reported joinable with the whole map, and has not ended.
 function ready(side) {
     if (!running(side)) return false;
     const boot = currentBoot(side);
-    return boot.includes('reporting joinable') && !ENDED.test(boot);
+    return boot.includes('reporting joinable') && !ENDED.test(boot) && !missingSubLevels(boot);
+}
+// Starts that went wrong: while a server's start has not reported joinable yet, its game process is ended (its
+// supervisor starts it again) when it is stopped (state T) for 15 s, its trace gets no new lines for
+// 150 s, or it is still not in its lobby 6 minutes after the process started.
+const BOOT = { a: {}, b: {} };
+function procState(pid) { try { return /^State:\s+(\S)/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1] || ''; } catch { return ''; } }
+function checkBoot(side) {
+    const b = BOOT[side], pid = gamePid(side), now = Date.now();
+    // only before the start reports joinable (a joinable server with parts of the map missing is handled apart)
+    if (!pid || frozen[side] || currentBoot(side).includes('reporting joinable')) { BOOT[side] = {}; return; }
+    if (b.pid !== pid) Object.assign(b, { pid, since: now, size: size(trace(side)), changed: now, stopped: 0 });
+    const sz = size(trace(side));
+    if (sz !== b.size) { b.size = sz; b.changed = now; }
+    b.stopped = procState(pid) === 'T' ? (b.stopped || now) : 0;
+    let why = '';
+    if (b.stopped && now - b.stopped >= 15000) why = 'its process is stopped (frozen)';
+    else if (now - b.changed >= 150000) why = `no progress in its trace for ${Math.round((now - b.changed) / 1000)}s`;
+    else if (now - b.since >= 360000) why = 'not in its lobby 6 minutes after it started';
+    if (!why) return;
+    log(`${side} start went wrong: ${why} - restarting it`);
+    BOOT[side] = {};
+    try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+}
+// A boot that came up with parts of the map missing: end that game server process so its supervisor
+// starts it again. Returns true when it did.
+const restarted = { a: 0, b: 0 };
+function restartIfMapMissing(side) {
+    const boot = currentBoot(side), n = missingSubLevels(boot);
+    if (!n || !boot.includes('reporting joinable') || ENDED.test(boot)) return false;
+    const pid = gamePid(side);
+    if (!pid || restarted[side] === pid) return false;
+    restarted[side] = pid;
+    log(`${side} came up with ${n} part(s) of the map missing - restarting it`);
+    try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+    return true;
 }
 
 function status() {
@@ -220,11 +265,15 @@ async function run() {
         const sb = other(act);
         // Every 10 s: the active server is never frozen or limited, the standby keeps its limits (a
         // container that restarted on its own gets a new cgroup).
-        if (LIMITS && ++tick % 10 === 0) {
+        tick++;
+        if (LIMITS && tick % 10 === 0) {
             asActive(act);
             if (!frozen[sb]) asStandby(sb);
             else { try { if (!/frozen 1/.test(fs.readFileSync(join(scope(sb), 'cgroup.events'), 'utf8'))) { frozen[sb] = false; asStandby(sb); } } catch { /* */ } }
         }
+        if (!frozen[sb] && tick % 5 === 0) { restartIfMapMissing(sb); checkBoot(sb); }
+        if (tick % 5 === 0 && running(act)) checkBoot(act);
+        if (!waiting && missingSubLevels(currentBoot(act)) && currentBoot(act).includes('reporting joinable')) waiting = 'map incomplete';
         if (FREEZE && !waiting && !frozen[sb]) {
             if (!ready(sb)) standbyReadyAt = 0;
             else if (!standbyReadyAt) standbyReadyAt = Date.now();
@@ -237,6 +286,9 @@ async function run() {
             asStandby(act);
             log(`${waiting} on ${act} - swapped: ${sb} is active, ${act} restarts as standby`);
             act = sb; standbyReadyAt = 0; off = size(trace(act)); waiting = ''; goneSince = 0; roundOverAt = 0;
+        } else if (waiting === 'map incomplete') {
+            if (restartIfMapMissing(act)) log(`standby ${sb} was not ready; ${act} restarts and stays active`);
+            waiting = ''; goneSince = 0; roundOverAt = 0;
         } else if (ready(act)) {
             log(`${waiting} on ${act} - standby ${sb} was not ready; ${act} restarted and stays active`);
             waiting = ''; goneSince = 0; roundOverAt = 0;
