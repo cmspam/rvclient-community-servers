@@ -23,7 +23,7 @@ export const HELP = `Rumbleverse server - terminal admin
   rv leave                             remove this server from the rVclient server list (before deleting it)
   rv setup                             first-time setup on the terminal
   rv reset-password                    new random web UI password
-  rv swap run|status|now|apply a|b    two servers of one mode, one connected (see swap.mjs)
+  rv swap status | restart <mode>      server pairs (RV_SWAP): which one is active, which one waits
 
   Modes: ${MODES.map(m => m.key).join(', ')}`;
 

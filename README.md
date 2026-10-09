@@ -413,88 +413,42 @@ sudo ls -l /proc/$(pgrep -x wineserver | head -1)/fd | grep -c ntsync
 
 Without ntsync the server works the same way, using Wine's older method.
 
-## Instant next match: two servers, one connected (Linux, experimental)
+## Instant next match: server pairs (Linux, experimental)
 
-A server needs a minute or more to start its next match. With enough memory for two game servers, two
-servers of the same mode can take turns instead: while one runs a match, the other has already started
-and waits in its lobby, with no network at all. A few seconds after the round is over, once the players
-have their results, they swap: the waiting server gets
-the game port and its connection, and the next match starts at once. The other one restarts and becomes
-the one waiting (players still on the old server's end-of-match screen lose that connection, which by
-then only keeps the screen open). Both use the same public address and game port and the same server identity, so to the
-backend it is one server; the waiting one never talks to it. If the waiting server is not ready when a
-match ends, nothing swaps and the server restarts as usual.
+A server needs a minute or more to start its next match. With enough memory, a mode can run as a pair
+of servers that take turns: while one runs a match, the other has already started and waits in its
+lobby, with no network at all. A few seconds after the round is over (once the players have their
+results), they swap: the waiting server gets the mode's game port and its connection, and the next
+match starts at once. The other one restarts and becomes the one waiting. Both use the same public
+address, game port and server identity, so to the backend the mode is still one server; the waiting one
+never talks to it. If the waiting server is not ready when a match ends, nothing swaps and the server
+restarts as usual.
 
-It takes three containers: the two servers on their own network, and `rv swap run`, which forwards the
-game port (UDP) to the active server, gives only that one network access, and swaps them when a match
-ends. The forwarding rewrites each packet's address without connection tracking, so a swap applies to
-the very next packet. Files in `/etc/containers/systemd/`:
+Choose the modes with `RV_SWAP` (for example `RV_SWAP=solo,duos`, or `all`). Each listed mode that is
+switched on runs as a pair, inside the same container; the other modes run as usual. A pair needs memory
+for two servers of that mode (2 to 3 GB each). In the container's settings (Quadlet):
 
 ```ini
-# rvswap.network
-[Network]
-NetworkName=rvswap
-Subnet=10.90.0.0/24
-```
-
-```ini
-# rvsolo-a.container (rvsolo-b.container: b instead of a, IP=10.90.0.11)
-[Container]
-ContainerName=rvsolo-a
-Image=ghcr.io/cmspam/rvclient-community-servers:latest
-Network=rvswap.network
-IP=10.90.0.10
-Volume=/path/to/Rumbleverse-client.zip:/game.zip:ro,z
-Volume=/var/srv/rvsolo-a:/data:Z
-Environment=RV_PUBLIC_IP=<your public IP> RV_MODES=solo
-AutoUpdate=registry
-[Service]
-Restart=always
-[Install]
-WantedBy=multi-user.target
-```
-
-```ini
-# rvswap.container
-[Container]
-ContainerName=rvswap
-Image=ghcr.io/cmspam/rvclient-community-servers:latest
-Exec=swap run
 Network=host
-PodmanArgs=--pid=host
+AddCapability=NET_ADMIN SYS_ADMIN
 SecurityLabelDisable=true
-AddCapability=NET_ADMIN
-HealthCmd=none
-Volume=/var/srv/rvsolo-a:/swap/a:ro
-Volume=/var/srv/rvsolo-b:/swap/b:ro
-Volume=/var/srv/rvswap:/swap/state
-Environment=RV_PUBLIC_IP=<your public IP>
-AutoUpdate=registry
-[Unit]
-After=rvsolo-a.service rvsolo-b.service
-[Service]
-Restart=always
-[Install]
-WantedBy=multi-user.target
+Environment=RV_SWAP=solo,duos
 ```
 
-With memory for only one running server (but swap, ideally zram), the waiting server can be frozen
-instead: `RV_SWAP_FREEZE=on` freezes its whole container once it is in its lobby and moves its memory out
-to swap (a running server keeps using all of its memory even when idle; a frozen one uses none, and no
-CPU). It is thawed right before it takes over, and fetches its memory back within seconds.
-`RV_SWAP_STANDBY_MEMORY=1200M` and `RV_SWAP_STANDBY_CPU=idle` keep it from taking memory or CPU from the
-running match while it starts, and `RV_SWAP_ACTIVE_MEMORY=2400M` keeps the running server's memory in RAM
-(without it the starting standby pushes the running server out to swap). A standby starting with little
-memory is slow: raise `RV_SWAP_BOOT_LIMIT_SEC` (default 360) so it is not restarted for that. The swap container then also needs the host's cgroup tree and namespace:
-`Volume=/sys/fs/cgroup:/host/cgroup:rw` and `PodmanArgs=--pid=host --cgroupns=host`.
+With Docker: `--network host --cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt apparmor=unconfined`.
+The host needs IP forwarding on (`net.ipv4.ip_forward=1`, which Podman and Docker normally set). Each
+server of a pair gets its own network namespace and its own copy of the server folder under
+`data/swap/<mode>-a` and `-b` (on a filesystem with reflink copies, such as XFS or Btrfs, the copy takes
+no extra space; otherwise the game content is shared through hard links). A mode's settings and add-ons
+are copied from the main server folder at every container start, so change them as usual and restart the
+container. If the pairs cannot run (for example without the capabilities above), the modes run as single
+servers and the log says why.
 
-Set up one server folder the normal way first, then copy it for the second one
-(`cp -a --reflink=auto /var/srv/rvsolo-a /var/srv/rvsolo-b`), so both have the same server identity.
-The swap container also watches both servers start: one that came up with parts of the map missing, or
-whose start froze, stalled (no new trace lines for 150 s) or took longer than `RV_SWAP_BOOT_LIMIT_SEC`, is
-restarted; a waiting
-server has a whole match to come back up. `podman exec rvswap rv swap status` shows which one is active and whether the other is ready. Settings
-(addresses, port, folders, instance) are listed at the top of `rootfs/opt/rv/swap.mjs`.
+`podman exec <container> rv swap status` shows, for each mode, which server is active and whether the
+other one is waiting in its lobby; `rv swap restart <mode>` restarts the active one (the waiting one takes
+over). The container watches every server's start: one that came up with parts of the map missing, or
+whose start froze, stalled or took longer than `RV_SWAP_BOOT_LIMIT_SEC` (default 360), is restarted; a
+waiting server has a whole match to come back up.
 
 ## Ports
 

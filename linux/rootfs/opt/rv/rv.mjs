@@ -15,6 +15,7 @@ import { createManager } from './manager.mjs';
 import { CONTROL_SOCK, applySettingDefaults } from './ops.mjs';
 import { runCommand, menu, HELP } from './cli.mjs';
 import { startKitAutoUpdate } from './kit-update.mjs';
+import { listedModes, takeModesFromMain, canRun, startPairs } from './pairs.mjs';
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const cmd = process.argv[2] || 'run';
@@ -49,12 +50,33 @@ async function run() {
     const manager = createManager({ log });
     const setupJob = { running: false, error: '', done: false, log: [] };
 
+    // RV_SWAP: the listed modes run as server pairs (pairs.mjs); the main supervisor runs the others.
+    let pairs = null;
+    async function startServers() {
+        const listed = listedModes().length && canRun(msg => log(msg)) ? listedModes() : [];
+        if (listedModes().length && !listed.length) log('[pairs] RV_SWAP is set but pairs cannot run here - those modes run as single servers');
+        const paired = takeModesFromMain(listed, log);
+        await manager.start();
+        if (!paired.length) return;
+        try {
+            pairs = await startPairs(paired, { log });
+            if (pairs.failed) throw new Error('see above');
+        } catch (e) {
+            // never lose the modes: they run as single servers in the main supervisor instead
+            log(`[pairs] could not start the pairs (${e.message}) - ${paired.join(', ')} run as single servers`);
+            try { if (pairs) await pairs.stop(); } catch { /* */ }
+            pairs = null;
+            takeModesFromMain([], log);
+            await manager.restart();
+        }
+    }
+
     function startSetup(opts) {
         if (setupJob.running) return;
         Object.assign(setupJob, { running: true, error: '', done: false, log: [] });
         const say = msg => { setupJob.log.push(msg); log(`[setup] ${msg}`); };
         runSetup(opts, say)
-            .then(() => { setupJob.done = true; applySettingDefaults(log); return manager.start(); })
+            .then(() => { setupJob.done = true; applySettingDefaults(log); return startServers(); })
             .catch(e => { setupJob.error = e.message; say(`SETUP STOPPED: ${e.message}`); })
             .finally(() => { setupJob.running = false; });
     }
@@ -74,7 +96,7 @@ async function run() {
     if (isConfigured()) {
         log(`[rv] server ${readState().nodeId} is set up - starting`);
         applySettingDefaults(log);
-        await manager.start();
+        await startServers();
     } else {
         const opts = optionsFromEnv();
         if (opts) { log('[rv] first-time setup from environment variables'); startSetup(opts); }
@@ -86,6 +108,7 @@ async function run() {
         if (stopping) return;
         stopping = true;
         log(`[rv] ${sig} - stopping the game servers`);
+        try { if (pairs) await pairs.stop(); } catch (e) { log(`[rv] stop error: ${e.message}`); }
         try { await manager.stop(); } catch (e) { log(`[rv] stop error: ${e.message}`); }
         rmSync(CONTROL_SOCK, { force: true });
         process.exit(0);
@@ -123,7 +146,10 @@ try {
     if (cmd === 'run') await run();
     else if (cmd === 'setup') await interactiveSetup();
     else if (cmd === 'menu') await menu();
-    else if (cmd === 'swap') await (await import('./swap.mjs')).main(process.argv.slice(3));
+    else if (cmd === 'swap') {
+        if (listedModes().length) (await import('./pairs.mjs')).pairsCli(process.argv.slice(3));
+        else await (await import('./swap.mjs')).main(process.argv.slice(3));
+    }
     else if (cmd === 'reset-password') {
         ensureDirs();
         const { resetPassword } = await import('./webui/auth.mjs');

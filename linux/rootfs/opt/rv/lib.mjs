@@ -1,5 +1,5 @@
 // Shared paths and helpers for the entrypoint, setup and web UI.
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const DATA = process.env.RV_DATA || '/data';
@@ -91,7 +91,8 @@ export function setIniValues(file, section, values) {
 }
 
 // ---- game server processes (Wine children of the supervisor) ----
-// Matched by the -RVInstance= argument the supervisor passes, like Stop-AllModes.bat does.
+// Matched by the -RVInstance= argument the supervisor passes, like Stop-AllModes.bat does, and by their
+// folder: with server pairs (RV_SWAP) several servers run in this container, each in its own data folder.
 export function gameProcesses() {
     const out = [];
     for (const pid of readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
@@ -100,6 +101,7 @@ export function gameProcesses() {
             if (!cmd.some(a => /RumbleverseClient-Win64-Shipping\.exe$/i.test(a))) continue;
             const inst = (cmd.find(a => a.startsWith('-RVInstance=')) || '').slice(12);
             if (!inst) continue;
+            if (!readlinkSync(`/proc/${pid}/cwd`).startsWith(SERVER + '/')) continue;
             const status = readFileSync(`/proc/${pid}/status`, 'utf8');
             const rssKb = Number((status.match(/^VmRSS:\s+(\d+)/m) || [])[1] || 0);
             const swapKb = Number((status.match(/^VmSwap:\s+(\d+)/m) || [])[1] || 0);
