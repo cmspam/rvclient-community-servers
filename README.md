@@ -413,6 +413,74 @@ sudo ls -l /proc/$(pgrep -x wineserver | head -1)/fd | grep -c ntsync
 
 Without ntsync the server works the same way, using Wine's older method.
 
+## Instant next match: two servers, one connected (Linux, experimental)
+
+A server needs a minute or more to start its next match. With enough memory for two game servers, two
+servers of the same mode can take turns instead: while one runs a match, the other has already started
+and waits in its lobby, with no network at all. When the match ends, they swap: the waiting server gets
+the game port and its connection, and the next match starts at once. The other one restarts and becomes
+the one waiting. Both use the same public address and game port and the same server identity, so to the
+backend it is one server; the waiting one never talks to it. If the waiting server is not ready when a
+match ends, nothing swaps and the server restarts as usual.
+
+It takes three containers: the two servers on their own network, and `rv swap run`, which forwards the
+game port (UDP) to the active server, gives only that one network access, and swaps them when a match
+ends. The forwarding rewrites each packet's address without connection tracking, so a swap applies to
+the very next packet. Files in `/etc/containers/systemd/`:
+
+```ini
+# rvswap.network
+[Network]
+NetworkName=rvswap
+Subnet=10.90.0.0/24
+```
+
+```ini
+# rvsolo-a.container (rvsolo-b.container: b instead of a, IP=10.90.0.11)
+[Container]
+ContainerName=rvsolo-a
+Image=ghcr.io/cmspam/rvclient-community-servers:latest
+Network=rvswap.network
+IP=10.90.0.10
+Volume=/path/to/Rumbleverse-client.zip:/game.zip:ro,z
+Volume=/var/srv/rvsolo-a:/data:Z
+Environment=RV_PUBLIC_IP=<your public IP> RV_MODES=solo
+AutoUpdate=registry
+[Service]
+Restart=always
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# rvswap.container
+[Container]
+ContainerName=rvswap
+Image=ghcr.io/cmspam/rvclient-community-servers:latest
+Exec=swap run
+Network=host
+PodmanArgs=--pid=host
+SecurityLabelDisable=true
+AddCapability=NET_ADMIN
+HealthCmd=none
+Volume=/var/srv/rvsolo-a:/swap/a:ro
+Volume=/var/srv/rvsolo-b:/swap/b:ro
+Volume=/var/srv/rvswap:/swap/state
+Environment=RV_PUBLIC_IP=<your public IP>
+AutoUpdate=registry
+[Unit]
+After=rvsolo-a.service rvsolo-b.service
+[Service]
+Restart=always
+[Install]
+WantedBy=multi-user.target
+```
+
+Set up one server folder the normal way first, then copy it for the second one
+(`cp -a --reflink=auto /var/srv/rvsolo-a /var/srv/rvsolo-b`), so both have the same server identity.
+`podman exec rvswap rv swap status` shows which one is active and whether the other is ready. Settings
+(addresses, port, folders, instance) are listed at the top of `rootfs/opt/rv/swap.mjs`.
+
 ## Ports
 
 | Mode | Port |

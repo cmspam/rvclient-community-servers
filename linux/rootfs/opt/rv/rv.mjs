@@ -123,6 +123,7 @@ try {
     if (cmd === 'run') await run();
     else if (cmd === 'setup') await interactiveSetup();
     else if (cmd === 'menu') await menu();
+    else if (cmd === 'swap') await (await import('./swap.mjs')).main(process.argv.slice(3));
     else if (cmd === 'reset-password') {
         ensureDirs();
         const { resetPassword } = await import('./webui/auth.mjs');

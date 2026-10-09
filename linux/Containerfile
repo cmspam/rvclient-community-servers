@@ -19,7 +19,7 @@ LABEL io.containers.autoupdate=registry \
       org.opencontainers.image.title="Rumbleverse server (Linux/Wine)" \
       org.opencontainers.image.description="Rumbleverse community/private server under Wine, with a web admin UI"
 
-RUN apk add --no-cache wine nodejs libarchive-tools tini ca-certificates tzdata \
+RUN apk add --no-cache wine nodejs libarchive-tools tini ca-certificates tzdata nftables \
  && wine --version && node --version
 
 COPY rootfs/ /
