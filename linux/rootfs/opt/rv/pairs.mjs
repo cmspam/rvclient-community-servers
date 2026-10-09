@@ -29,9 +29,10 @@
 // starts as a pair once its server is gone; a pair that is switched off stops and the main supervisor runs
 // the mode again.
 //
-// The container needs the host network and the rights to set up network namespaces and nftables:
-// Network=host, AddCapability=NET_ADMIN SYS_ADMIN (Podman also SecurityLabelDisable=true); SYS_RESOURCE for the
-// waiting servers' low CPU priority. Settings:
+// The container needs the rights to set up network namespaces and nftables: AddCapability=NET_ADMIN SYS_ADMIN
+// (Podman also SecurityLabelDisable=true); SYS_RESOURCE for the waiting servers' low CPU priority. Its network
+// (the host's, or its own) needs IP forwarding on; the game ports are forwarded from the address they arrive
+// at (the default route's interface). Settings:
 //   RV_SWAP                   modes to run as pairs on a server's first start: solo,duos,... or all
 //   RV_SWAP_ROUND_END_DELAY_SEC  seconds after Server.dll's "round over" before the swap (default 5)
 //   RV_SWAP_BOOT_LIMIT_SEC    a start not joinable after this long is restarted (default 360)
@@ -92,10 +93,18 @@ export function pairsAvailable() {
     try { sh('ip', ['netns', 'list']); } catch { return { ok: false, reason: 'the image has no "ip netns" (update the image)' }; }
     try { sh('nft', ['list', 'tables']); } catch { return { ok: false, reason: 'the container needs the rights for it (AddCapability=NET_ADMIN SYS_ADMIN, see the README)' }; }
     let fwd = '0'; try { fwd = fs.readFileSync('/proc/sys/net/ipv4/ip_forward', 'utf8').trim(); } catch { /* */ }
-    if (fwd !== '1') return { ok: false, reason: 'IP forwarding is off on this host (net.ipv4.ip_forward=1)' };
+    if (fwd !== '1') return { ok: false, reason: 'IP forwarding is off in the network of the container (net.ipv4.ip_forward=1, see the README)' };
     return { ok: true, reason: '' };
 }
 
+// The uplink's own IPv4 address: where the game ports arrive. On a host network it is the public address;
+// behind a router, a container network or a tunnel (whose far end forwards the public address here) it is
+// this side's address.
+function addrOf(dev) {
+    const m = /inet (\d+\.\d+\.\d+\.\d+)/.exec(sh('ip', ['-4', '-o', 'addr', 'show', 'dev', dev]));
+    if (!m) throw new Error(`no IPv4 address on ${dev}`);
+    return m[1];
+}
 function uplink() {
     const r = fs.readFileSync('/proc/net/route', 'utf8').split('\n').slice(1).map(l => l.split('\t'));
     const d = r.find(f => f[1] === '00000000');
@@ -214,14 +223,14 @@ function prepareNet(sv) {
 
 // All pairs' forwarding in one table: outbound NAT for the active servers, the game ports forwarded
 // statelessly to them, the waiting servers cut off.
-export function rules(pairs, active, pub, dev) {
+export function rules(pairs, active, addr, dev) {
     const all = pairs.flatMap(p => SIDES.map(s => p[s].ip));
     const lines = [];
     for (const p of pairs) {
         const on = p[active[p.mode.key]], off = p[other(active[p.mode.key])], port = p.mode.port;
-        lines.push({ raw: `iifname "${dev}" ip daddr ${pub} udp dport ${port} notrack`, raw2: `ip saddr { ${p.a.ip}, ${p.b.ip} } udp sport ${port} notrack`,
-            dnat: `iifname "${dev}" ip daddr ${pub} udp dport ${port} ip daddr set ${on.ip}`,
-            snat: `oifname "${dev}" ip saddr ${on.ip} udp sport ${port} ip saddr set ${pub}`, off: off.ip });
+        lines.push({ raw: `iifname "${dev}" ip daddr ${addr} udp dport ${port} notrack`, raw2: `ip saddr { ${p.a.ip}, ${p.b.ip} } udp sport ${port} notrack`,
+            dnat: `iifname "${dev}" ip daddr ${addr} udp dport ${port} ip daddr set ${on.ip}`,
+            snat: `oifname "${dev}" ip saddr ${on.ip} udp sport ${port} ip saddr set ${addr}`, off: off.ip });
     }
     return `table ip rvpairs
 delete table ip rvpairs
@@ -459,9 +468,8 @@ function mainRuns(mode) {
 
 // Runs the pairs the owner chose and keeps them in line with modes.json and the "Pair" setting.
 // Returns { stop }.
-export function createPairs({ log = console.log, publicIp } = {}) {
-    const pub = publicIp || readState().publicIp || env.RV_PUBLIC_IP;
-    const dev = uplink();
+export function createPairs({ log = console.log } = {}) {
+    const dev = uplink(), addr = addrOf(dev);
     fs.mkdirSync(SWAP_DIR, { recursive: true });
     const active = readJson(STATE, {});
     const running = new Map();   // mode key -> { p, procs, ctl }
@@ -469,7 +477,7 @@ export function createPairs({ log = console.log, publicIp } = {}) {
 
     const apply = () => {
         const pairs = [...running.values()].map(r => r.p);
-        if (pairs.length) execFileSync('nft', ['-f', '-'], { input: rules(pairs, active, pub, dev) });
+        if (pairs.length) execFileSync('nft', ['-f', '-'], { input: rules(pairs, active, addr, dev) });
         else { try { execFileSync('nft', ['delete', 'table', 'ip', 'rvpairs'], { stdio: 'ignore' }); } catch { /* none */ } }
         writeJson(STATE, active, 0o644);
         updateState({ pairedModes: [...running.keys()] });

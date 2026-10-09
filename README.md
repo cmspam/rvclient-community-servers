@@ -445,8 +445,12 @@ With Docker: `--network host --cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add S
 With `SYS_RESOURCE`, the waiting server of a pair runs at the lowest CPU priority, so that its starts never
 slow down a match on the box; the active one runs at the normal priority. Without it, both run at the normal
 priority.
-The host needs IP forwarding on (`net.ipv4.ip_forward=1`; the installer switches it on for pairs, and Podman
-or Docker networks usually have it on already, but a host with only host-network containers may not). Each
+The container's network needs IP forwarding on (`net.ipv4.ip_forward=1`). With `Network=host` that is the
+host's setting (the installer switches it on for pairs; a host with only host-network containers may have
+it off). The container can also use its own network (a Podman or Docker network, or another container's
+network such as a VPN tunnel): the game ports must then reach the container's address, and forwarding is
+set for that network (Quadlet `Sysctl=net.ipv4.ip_forward=1`, Docker `--sysctl net.ipv4.ip_forward=1`; for
+a network shared with another container, on that container). Each
 server of a pair gets its own network namespace and its own copy of the server folder under
 `data/swap/<mode>-a` and `-b` (on a filesystem with reflink copies, such as XFS or Btrfs, the copy takes
 no extra space; otherwise the game content is shared through hard links). Settings changed with `rv set` or the web
