@@ -18,7 +18,7 @@ import https from 'node:https';
 import { basename, dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
-import { readState, MODES } from './lib.mjs';
+import { readState, readJson, MODES, DATA, INSTANCES, SUP_DIR } from './lib.mjs';
 import { applySlim } from './slim.mjs';
 import { applyBots } from './bots.mjs';
 import { applyAddons } from './addons.mjs';
@@ -37,8 +37,9 @@ function viaWine(fn) {
         applySlim(cmd);
         applyBots(cmd);
         applyAddons(cmd);
-        return KSM ? fn.call(this, 'rv-ksm', [WINE, cmd, ...args], ...rest)
+        const child = KSM ? fn.call(this, 'rv-ksm', [WINE, cmd, ...args], ...rest)
             : fn.call(this, WINE, [cmd, ...args], ...rest);
+        return child;
     };
 }
 
@@ -94,12 +95,16 @@ if (!SHARE_STATS) {
     https.request = withoutStatsRequest(https.request);
 }
 
-// Server pairs (RV_SWAP, pairs.mjs): several supervisors in one container share one server identity, and
-// each one's node agent registers the box with the backend, listing every mode as running or off by its
-// own modes file. Only the main supervisor speaks for the box: a pair server's registration is answered
-// here without being sent, and the main one reports the modes it hands to pairs as running.
+// Server pairs (pairs.mjs): several supervisors in one container share one server identity. Only the main
+// supervisor speaks for the box:
+// - a pair server's node agent never reaches the backend (its register / poll / status are answered here),
+//   and its supervisor gets no backend view of its servers (a pair's two servers share one address and
+//   port, so the backend's row is never this one server's; pairs.mjs watches them instead);
+// - the main one reports the paired modes as running, with the pair's active server's state, and backend
+//   commands for them go to the pair: restart restarts the active server (the waiting one takes over),
+//   mode switches go into modes.json (the owner's choice, which pairs.mjs splits up).
 const PAIR = process.env.RV_PAIR || '';
-const HAS_PAIRS = !PAIR && /\S/.test(process.env.RV_SWAP || '') && !/^(0|off|no|false)$/i.test(process.env.RV_SWAP);
+const STATUS_FILE = join(DATA, 'swap', 'status.json');
 function pathOf(args) {
     const a = args[0];
     try {
@@ -109,48 +114,139 @@ function pathOf(args) {
     } catch { /* not a URL */ }
     return '';
 }
-function answeredHere(args) {
+const parse = data => { try { return JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : String(data)); } catch { return null; } };
+// A request answered in this process: the response comes after delayMs (a long-poll that has nothing to do).
+function answeredHere(args, path, answer) {
     const cb = args.find(a => typeof a === 'function');
     const req = new PassThrough();
-    Object.assign(req, { path: '/nodes/register', headersSent: false, setTimeout: () => req, setHeader: () => {}, destroy: () => req });
-    req.end = () => {
-        setImmediate(() => {
+    let timer = null;
+    Object.assign(req, { path, headersSent: false, setTimeout: () => req, setHeader: () => {},
+        destroy: e => { clearTimeout(timer); if (e) setImmediate(() => req.emit('error', e)); return req; } });
+    req.end = data => {
+        const { body, delayMs = 0 } = answer(parse(data));
+        timer = setTimeout(() => {
             const res = new PassThrough();
             res.statusCode = 200;
             if (cb) cb(res);
             req.emit('response', res);
-            res.end(JSON.stringify({ success: true, status: 'approved' }));
-        });
+            res.end(JSON.stringify(body));
+        }, delayMs);
         return req;
     };
     return req;
 }
+function pairAnswer(path) {
+    if (path === '/nodes/register') return () => ({ body: { success: true, status: 'approved' } });
+    if (path === '/nodes/poll') return b => ({ body: { success: true, commands: [] }, delayMs: Math.min(Number(b?.waitMs) || 25000, 60000) });
+    return () => ({ body: { success: false, error: 'a server pair: the main server speaks for this box' } });
+}
+const pairedModes = () => MODES.filter(m => (readState().pairedModes || []).includes(m.key));
+const mainUsesSplitModes = () => String(readJson(INSTANCES, {})?.modesFile || '').endsWith('modes.main.json');
 export function pairedOn(body, ids) {
-    let obj;
-    try { obj = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : String(body)); } catch { return body; }
+    const obj = parse(body);
     let changed = false;
     for (const s of obj?.servers || []) if (ids.has(s.instance) && s.off) { s.off = false; changed = true; }
     return changed ? Buffer.from(JSON.stringify(obj)) : body;
 }
+// The node agent's health report: paired modes as their active server is.
+export function pairedHealth(body, paired, status) {
+    const obj = parse(body);
+    if (!obj?.health?.servers) return body;
+    for (const s of obj.health.servers) {
+        const m = paired.find(x => x.id === s.id), st = m && status?.modes?.[m.key];
+        if (!st) continue;
+        const d = st.activeDetails || {};
+        Object.assign(s, { running: !!d.running, heartbeat: st.activeState === 'up', players: d.players ?? 0,
+            uptimeSec: d.uptimeSec ?? 0, restarts: st.restarts ?? s.restarts, modeOff: false });
+    }
+    return Buffer.from(JSON.stringify(obj));
+}
+// Backend commands this process carries out itself (they would go to the wrong place in the supervisor).
+async function takeCommand(cmd, paired) {
+    const m = paired.find(x => x.id === cmd.instance) || MODES.find(x => x.id === cmd.instance);
+    if (cmd.type === 'restart' && m && paired.includes(m)) {
+        const { restartActive } = await import('./pairs.mjs');
+        return restartActive(m.key) ? `restarting the active server of the ${m.label} pair (the waiting one takes over)` : `${m.label}: no server to restart`;
+    }
+    if (cmd.type === 'mode' && m && mainUsesSplitModes()) {
+        const f = join(SUP_DIR, 'modes.json'), obj = readJson(f, {});
+        obj[m.key] = cmd.on === true;
+        fs.writeFileSync(f, JSON.stringify(obj, null, 2) + '\n');
+        return `mode "${m.key}" switched ${cmd.on ? 'ON' : 'OFF'} in the modes file`;
+    }
+    return null;
+}
+function forMain(request, path, args) {
+    const paired = pairedModes();
+    if (path !== '/nodes/register' && path !== '/nodes/poll') return request.apply(this, args);
+    let auth = {};
+    const i = args.findIndex(a => typeof a === 'function');
+    if (path === '/nodes/poll' && i >= 0) {
+        const cb = args[i];
+        args = [...args];
+        args[i] = res => {
+            const chunks = [];
+            res.on('data', c => chunks.push(c));
+            res.on('end', async () => {
+                const raw = Buffer.concat(chunks), obj = parse(raw);
+                const keep = [];
+                for (const cmd of obj?.commands || []) {
+                    let message = null, ok = true;
+                    try { message = await takeCommand(cmd, paired); } catch (e) { ok = false; message = e.message; }
+                    if (message === null) { keep.push(cmd); continue; }
+                    console.log(`${new Date().toISOString()} [node] command ${cmd.id} ${cmd.type} ${cmd.instance || ''}: ${ok ? 'done' : 'FAILED'} - ${message}`);
+                    const ack = request.call(http, new URL('/nodes/ack', args[0] instanceof URL || typeof args[0] === 'string' ? args[0] : `http://${args[0].host || args[0].hostname}`), { method: 'POST',
+                        agent: false, headers: { 'content-type': 'application/json' } }, r => r.resume());
+                    ack.on('error', () => {});
+                    ack.end(JSON.stringify({ ...auth, commandId: cmd.id, ok, message }));
+                }
+                // restart-all: the agent restarts the main supervisor's servers, the pairs' active servers restart here
+                if (keep.some(c => c.type === 'restart-all') && paired.length) {
+                    const { restartActive } = await import('./pairs.mjs');
+                    for (const m of paired) restartActive(m.key);
+                }
+                const out = obj && keep.length !== (obj.commands || []).length ? Buffer.from(JSON.stringify({ ...obj, commands: keep })) : raw;
+                const fake = new PassThrough();
+                Object.assign(fake, { statusCode: res.statusCode, headers: res.headers });
+                cb(fake);
+                fake.end(out);
+            });
+        };
+    }
+    const req = request.apply(this, args);
+    const end = req.end;
+    req.end = function (data, ...rest) {
+        if (data != null && typeof data !== 'function') {
+            const body = parse(data);
+            if (body) auth = { nodeId: body.nodeId, key: body.key };
+            let out = data;
+            if (paired.length && path === '/nodes/register') out = pairedOn(data, new Set(paired.map(m => m.id)));
+            if (paired.length && path === '/nodes/poll') out = pairedHealth(data, paired, readJson(STATUS_FILE, null));
+            if (out !== data && !req.headersSent) { req.setHeader('content-length', out.length); data = out; }
+        }
+        return end.call(this, data, ...rest);
+    };
+    return req;
+}
 function forPairs(request) {
     return function (...args) {
-        if (!(PAIR || HAS_PAIRS) || pathOf(args) !== '/nodes/register') return request.apply(this, args);
-        if (PAIR) return answeredHere(args);
-        const req = request.apply(this, args);
-        const end = req.end;
-        req.end = function (data, ...rest) {
-            if (data != null && typeof data !== 'function') {
-                const paired = new Set(readState().pairedModes || []);
-                const out = pairedOn(data, new Set(MODES.filter(m => paired.has(m.key)).map(m => m.id)));
-                if (out !== data && !req.headersSent) { req.setHeader('content-length', out.length); data = out; }
-            }
-            return end.call(this, data, ...rest);
-        };
-        return req;
+        const path = pathOf(args);
+        if (!path.startsWith('/nodes/')) return request.apply(this, args);
+        if (PAIR) return answeredHere(args, path, pairAnswer(path));
+        return forMain.call(this, request, path, args);
     };
 }
 http.request = forPairs(http.request);
 https.request = forPairs(https.request);
+if (PAIR) {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = function (input, ...rest) {
+        let path = '';
+        try { path = new URL(typeof input === 'string' || input instanceof URL ? input : input.url).pathname; } catch { /* */ }
+        if (path === '/dedicatedserver/instances') return Promise.resolve(new Response('', { status: 503 }));
+        return realFetch.call(this, input, ...rest);
+    };
+}
 
 // Make `import { spawn } from 'node:child_process'` (and copyFileSync from 'node:fs', request
 // from 'node:http') in the upstream modules see the wrappers.

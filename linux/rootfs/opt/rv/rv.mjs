@@ -76,7 +76,8 @@ async function run() {
     }
 
     startControlSocket(manager, setupJob);
-    startKitAutoUpdate(log);
+    // a pair server's kit is the main server's: pairs.mjs carries updates into its folder
+    if (!process.env.RV_PAIR) startKitAutoUpdate(log);
     if (webUiEnabled) {
         const { ensureAuth } = await import('./webui/auth.mjs');
         const { startWebUi } = await import('./webui/server.mjs');

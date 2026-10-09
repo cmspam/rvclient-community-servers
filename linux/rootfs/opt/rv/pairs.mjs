@@ -10,11 +10,17 @@
 // address without connection tracking, so a swap applies to the very next packet. Both copies keep the
 // server's identity, so to the backend each mode is still one server.
 //
-// Registration: every server's node agent registers the box with the backend; only the main supervisor's
-// registration is sent, with the paired modes marked as running (linux-shim.mjs).
+// Backend: only the main supervisor's node agent talks to the backend. The pair servers' agents are answered
+// inside their own process; the main one reports the paired modes as running (with the active server's
+// state) and carries out the backend's commands for them (linux-shim.mjs). Server kit updates go into the
+// main server folder and reach each pair server while it is the waiting one.
 //
 // Health: a server that starts with parts of the map missing is not used (it is restarted while it
-// waits; the active one is swapped out), and so is a start that froze, stalled or takes too long.
+// waits; the active one is swapped out), and so is a start that froze, stalled or takes too long, or a
+// server that hangs once it is up. The supervisors' own health checks are off in the pair servers (they
+// judge by the backend's row, which both servers of a pair share); this controller watches each server's
+// own trace instead: a crash ("[FATAL]", or the process ending), a match running longer than any match
+// (30 min), a flood of caught faults.
 // If the waiting server is not ready when a match ends, nothing swaps and the server restarts as usual.
 //
 // Modes: modes.json stays the owner's choice of modes. Where pairs can run, the main supervisor reads
@@ -41,6 +47,9 @@ const RV = new URL('./rv.mjs', import.meta.url).pathname;
 const env = process.env;
 const ROUND_END_DELAY_MS = (Number(env.RV_SWAP_ROUND_END_DELAY_SEC) || 5) * 1000;
 const BOOT_LIMIT_MS = (Number(env.RV_SWAP_BOOT_LIMIT_SEC) || 360) * 1000;
+const STUCK_MATCH_MS = 30 * 60 * 1000;   // like the supervisor's stuckMatchMin
+const FAULTS_PER_MIN = 300;              // like the supervisor's faultsPerMin, for 3 minutes
+const STUCK = new Set(['match running longer than any match', 'fault flood']);
 const SIDES = ['a', 'b'];
 const other = s => (s === 'a' ? 'b' : 'a');
 
@@ -117,6 +126,34 @@ function copyTree(src, dest, log) {
     }
     return 'hard links';
 }
+// Server kit updates install into the main server folder; a pair server gets them while it is the waiting
+// one (pairs.mjs stops it, brings its folder up to the main one's files and starts it again). Per-server
+// files (settings, modes, traces, logs) are not touched; a file counts as changed by size and time.
+const OWN_FILES = /^(_updates|Rumbleverse\/Saved)(\/|$)|(^|\/)crash_trace_[^/]*$|\.log$|\/Config\.[a-z]+\.ini$|\/RVSupervisor\/(ds-instances\.json|modes[^/]*\.json)[^/]*$|\.rv-new-\d+$/;
+const kitOf = dir => { try { return fs.readFileSync(join(dir, 'rv-server.version'), 'utf8').trim(); } catch { return ''; } };
+function syncKit(sv) {
+    const dest = join(sv.dir, 'server');
+    let n = 0;
+    const walk = rel => {
+        for (const e of fs.readdirSync(join(SERVER, rel), { withFileTypes: true })) {
+            const r = rel ? `${rel}/${e.name}` : e.name;
+            if (OWN_FILES.test(r) || r === 'rv-server.version') continue;
+            if (e.isDirectory()) { fs.mkdirSync(join(dest, r), { recursive: true }); walk(r); continue; }
+            if (!e.isFile()) continue;
+            const a = fs.statSync(join(SERVER, r));
+            let b = null; try { b = fs.statSync(join(dest, r)); } catch { /* new file */ }
+            if (b && b.size === a.size && Math.trunc(b.mtimeMs) === Math.trunc(a.mtimeMs)) continue;
+            const tmp = join(dest, `${r}.rv-new-${process.pid}`);
+            sh('cp', ['-p', '--reflink=auto', join(SERVER, r), tmp]);
+            fs.renameSync(tmp, join(dest, r));
+            n++;
+        }
+    };
+    walk('');
+    fs.copyFileSync(join(SERVER, 'rv-server.version'), join(dest, 'rv-server.version'));
+    return n;
+}
+
 function prepareCopy(sv, log) {
     if (!fs.existsSync(join(sv.win64, GAME_EXE))) {
         fs.rmSync(sv.dir, { recursive: true, force: true });
@@ -136,9 +173,14 @@ function prepareCopy(sv, log) {
     const modes = Object.fromEntries(MODES.map(m => [m.key, m.key === sv.mode.key]));
     writeJson(modesFile(sv.dir), modes, 0o644);
     const instFile = join(sv.win64, 'RVSupervisor', 'ds-instances.json'), inst = readJson(instFile, null);
-    if (inst && (inst.matchEndRelaunchSec !== 0 || inst.launchGapSec !== 0 || inst.modesFile !== 'modes.json')) {
+    if (inst && (inst.matchEndRelaunchSec !== 0 || inst.launchGapSec !== 0 || inst.modesFile !== 'modes.json' || inst.healer !== false)) {
         inst.matchEndRelaunchSec = 0; inst.launchGapSec = 0;   // only one server per copy: no waits
         inst.modesFile = 'modes.json';
+        // Its health checks judge a server by the backend's row for its address and port, which both servers
+        // of a pair share, and keep their state across the hours a waiting server is offline (a server that
+        // had just taken over was restarted as "stuck ending the match for 12 min"). This controller checks
+        // the pair servers itself, from each one's own trace.
+        inst.healer = false;
         writeJson(instFile, inst, 0o644);
     }
     fs.mkdirSync(join(sv.dir, 'logs'), { recursive: true });
@@ -227,7 +269,9 @@ function gamePid(sv) {
     }
     return 0;
 }
-const ENDED = /terminating for restart|\*\*\* CRASH|boot attempts exhausted/;
+// A process that is going away. Server.dll's "*** CRASH ***" lines are often caught faults the server
+// survives ("[CRASHGUARD] ... skipping"); only "[FATAL]" means it is dying.
+const ENDED = /terminating for restart|\[FATAL\]|boot attempts exhausted/;
 function missingSubLevels(boot) {
     const m = /forced sub-levels settled[^\n]*?(\d+) not loaded/.exec(boot);
     return m ? Number(m[1]) : 0;
@@ -254,7 +298,7 @@ function procState(pid) { try { return /^State:\s+(\S)/m.exec(fs.readFileSync(`/
 function createWatch(sv, log) {
     // Where the trace ended when the current game process appeared: a boot counts only when its
     // "DllMain: begin" comes after that, so a new process is never judged by the previous one's lines.
-    let seen = { pid: 0, offset: 0 }, watching = false, boot = {}, restartedPid = 0;
+    let seen = { pid: 0, offset: 0 }, watching = false, boot = {}, up = {}, restartedPid = 0;
     const w = {
         sv,
         observe() {
@@ -288,6 +332,14 @@ function createWatch(sv, log) {
             if (!pid) { boot = {}; return; }
             if (b.includes('reporting joinable')) {
                 boot = {};
+                // up: it writes a KEEPALIVE line every 30 s, in a match or waiting
+                if (up.pid !== pid) up = { pid, size: size(sv.trace), changed: now, stopped: 0 };
+                const usz = size(sv.trace);
+                if (usz !== up.size) { up.size = usz; up.changed = now; }
+                up.stopped = procState(pid) === 'T' ? (up.stopped || now) : 0;
+                const hung = up.stopped && now - up.stopped >= 15000 ? 'it froze (process stopped)'
+                    : now - up.changed >= 120000 ? `its trace has been silent for ${Math.round((now - up.changed) / 1000)}s (hung)` : '';
+                if (hung) { up = {}; w.kill(hung); return; }
                 const n = missingSubLevels(b);
                 if (n && !ENDED.test(b) && restartedPid !== pid) { restartedPid = pid; w.kill(`came up with ${n} part(s) of the map missing`); }
                 return;
@@ -406,10 +458,10 @@ export function createPairs({ log = console.log, publicIp } = {}) {
         for (const sd of SIDES) { prepareCopy(p[sd], log); prepareNet(p[sd]); }
         if (!active[mode.key]) active[mode.key] = 'a';
         const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, goneSince: 0, wasUp: false };
-        running.set(mode.key, { p, ctl, procs: [] });
+        running.set(mode.key, { p, ctl, procs: {} });
         apply();
         // the active server starts first; the waiting one a minute and a half later
-        running.get(mode.key).procs = [runServer(p[active[mode.key]], log, 0), runServer(p[other(active[mode.key])], log, 90000)];
+        running.get(mode.key).procs = { [active[mode.key]]: runServer(p[active[mode.key]], log, 0), [other(active[mode.key])]: runServer(p[other(active[mode.key])], log, 90000) };
         log(`[pairs] ${mode.label}: runs as a pair (active ${active[mode.key]}, the other one waits)`);
     };
     const stopPair = async key => {
@@ -417,7 +469,7 @@ export function createPairs({ log = console.log, publicIp } = {}) {
         if (!r) return;
         running.delete(key);
         apply();
-        await Promise.all(r.procs.map(x => x.stop()));
+        await Promise.all(Object.values(r.procs).map(x => x.stop()));
         for (const sd of SIDES) {
             try { sh('ip', ['netns', 'del', r.p[sd].ns]); } catch { /* */ }
             try { sh('ip', ['link', 'del', r.p[sd].hostIf]); } catch { /* */ }
@@ -451,6 +503,34 @@ export function createPairs({ log = console.log, publicIp } = {}) {
         } finally { busy = false; }
     };
 
+    // Settings written into the main server's Config.<mode>.ini only (a backend "settings" command) reach
+    // both servers of the pair; each uses them from its next start.
+    const followSettings = p => {
+        const f = `Config.${p.mode.key}.ini`, main = join(SERVER, 'Rumbleverse', 'Binaries', 'Win64', f);
+        let m; try { m = fs.statSync(main).mtimeMs; } catch { return; }
+        for (const sd of SIDES) {
+            const dst = join(p[sd].win64, f);
+            let d = 0; try { d = fs.statSync(dst).mtimeMs; } catch { /* */ }
+            if (m > d) { const tmp = `${dst}.rv-new-${process.pid}`; fs.copyFileSync(main, tmp); fs.renameSync(tmp, dst); }
+        }
+    };
+    // A kit update for the waiting server: stop it, bring its folder up to date, start it again.
+    const updateWaiting = (c, sd) => {
+        const r = running.get(c.p.mode.key), sv = c.p[sd];
+        if (!r?.procs[sd]) return;
+        c.syncing = sd;
+        (async () => {
+            const from = kitOf(join(sv.dir, 'server')) || 'unknown', to = kitOf(SERVER);
+            await r.procs[sd].stop();
+            try {
+                const n = syncKit(sv);
+                prepareCopy(sv, log);
+                log(`[pairs] ${sv.name}: server kit ${from} -> ${to} (${n} file(s)) while it was the waiting server`);
+            } catch (e) { log(`[pairs] ${sv.name}: server kit update failed (${e.message}) - it keeps ${from}`); }
+            if (running.get(c.p.mode.key) === r) r.procs[sd] = runServer(sv, log, 0);
+        })().catch(e => log(`[pairs] ${e.message}`)).finally(() => { c.syncing = ''; });
+    };
+
     const describe = (w, isActive) => w.ready() ? (isActive ? 'up' : 'in its lobby') : gamePid(w.sv) ? (isActive && w.currentBoot().includes('reporting joinable') ? 'up' : 'starting') : 'not running';
     const loop = async () => {
         while (!stopped) {
@@ -476,8 +556,11 @@ export function createPairs({ log = console.log, publicIp } = {}) {
                     const text = readRange(f, c.off, s); c.off = s;
                     if (!c.waiting && /\[ROUNDEND\] round over/.test(text) && !c.roundOverAt) c.roundOverAt = Date.now();
                     if (!c.waiting && /terminating for restart/.test(text)) c.waiting = 'match over';
-                    else if (!c.waiting && /\*\*\* CRASH|boot attempts exhausted/.test(text)) c.waiting = 'crashed';
+                    else if (!c.waiting && /\[FATAL\]|boot attempts exhausted/.test(text)) c.waiting = 'crashed';
                     else if (!c.waiting && c.wasUp && /DllMain: begin/.test(text)) c.waiting = 'restarted';
+                    // the active server's own match state (the supervisors' health checks are off in pairs)
+                    for (const m of text.matchAll(/\[FLOW\] game flow -?\d+ -> (-?\d+)/g)) { c.flow = Number(m[1]); c.flowSince = Date.now(); }
+                    c.faults = (c.faults || 0) + (text.match(/\[CRASHGUARD\]/g) || []).length;
                 }
                 if (!c.wasUp && A.ready()) c.wasUp = true;
                 if (!c.waiting && c.roundOverAt && Date.now() - c.roundOverAt >= ROUND_END_DELAY_MS) c.waiting = 'round over';
@@ -486,7 +569,14 @@ export function createPairs({ log = console.log, publicIp } = {}) {
                     if (c.goneSince && Date.now() - c.goneSince > 3000) c.waiting = 'process ended';
                 }
                 if (!c.waiting && missingSubLevels(A.currentBoot()) && A.currentBoot().includes('reporting joinable')) c.waiting = 'map incomplete';
-                if (tick % 5 === 0) { B.checkHealth(); if (!c.waiting) A.checkHealth(); }
+                if (!c.waiting && c.flow === 3 && Date.now() - c.flowSince >= STUCK_MATCH_MS) c.waiting = 'match running longer than any match';
+                if (tick % 60 === 0) {   // caught faults per minute: a broken match faults every frame
+                    c.floodMin = (c.faults || 0) >= FAULTS_PER_MIN ? (c.floodMin || 0) + 1 : 0;
+                    c.faults = 0;
+                    if (!c.waiting && c.floodMin >= 3) c.waiting = 'fault flood';
+                }
+                if (tick % 5 === 0) { B.checkHealth(); if (!c.waiting) A.checkHealth(); followSettings(c.p); }
+                if (tick % 30 === 0 && !c.syncing && kitOf(SERVER) && kitOf(SERVER) !== kitOf(join(c.p[sb].dir, 'server'))) updateWaiting(c, sb);
                 if (!c.waiting) continue;
                 if (B.ready()) {
                     const prev = active[key];
@@ -494,9 +584,12 @@ export function createPairs({ log = console.log, publicIp } = {}) {
                     try { apply(); } catch (e) { active[key] = prev; log(`[pairs] ${c.p.mode.label}: could not swap: ${e.message}`); continue; }
                     A.forget();
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - swapped: ${sb} is active, ${act} restarts and waits`);
-                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1;
+                    if (STUCK.has(c.waiting)) A.kill(c.waiting);
+                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1; c.flow = null; c.faults = 0; c.floodMin = 0;
                 } else if (c.waiting === 'map incomplete') {
                     A.checkHealth(); c.waiting = ''; c.roundOverAt = 0;
+                } else if (STUCK.has(c.waiting)) {
+                    A.kill(`${c.waiting} (${sb} was not ready)`); c.waiting = ''; c.roundOverAt = 0; c.flow = null; c.floodMin = 0;
                 } else if (A.ready()) {
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - ${sb} was not ready; ${act} restarted and stays active`);
                     c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true;

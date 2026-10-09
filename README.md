@@ -453,12 +453,29 @@ servers, the log says why, and the Pair switch on the web page is greyed out wit
 installer adds the capabilities when pairs are chosen during installation.
 
 The web admin page and `rv status` show a paired mode with its active server (and which one is waiting);
-its Restart button restarts the active server, and its on/off switch is fixed by `RV_SWAP`.
-`podman exec <container> rv swap status` shows, for each mode, which server is active and whether the
-other one is waiting in its lobby; `rv swap restart <mode>` restarts the active one (the waiting one takes
-over). The container watches every server's start: one that came up with parts of the map missing, or
-whose start froze, stalled or took longer than `RV_SWAP_BOOT_LIMIT_SEC` (default 360), is restarted; a
-waiting server has a whole match to come back up.
+its Restart button restarts the active server (the waiting one takes over), and its On switch starts or
+stops the pair. `podman exec <container> rv swap status` shows, for each mode, which server is active and
+whether the other one is waiting in its lobby; `rv swap restart <mode>` restarts the active one.
+
+Only the main server speaks to the backend for the box. The servers of a pair never register, poll or
+report on their own; the main one reports a paired mode as running, with its active server's players,
+and carries out the backend's commands for it: a restart restarts the active server, and switching the mode
+off or on goes into `modes.json`. Server kit updates install into the main server folder; each server of
+a pair gets the new files while it is the waiting one (it is stopped, brought up to date and started
+again), so a pair moves to a new kit within a match or two, without stopping a match.
+
+The container watches every server of a pair from its own log, not from the backend (both servers of a pair
+share one address and port, so the backend's view never belongs to one of them):
+
+- a start that came up with parts of the map missing, froze, stalled, or took longer than
+  `RV_SWAP_BOOT_LIMIT_SEC` (default 360) is restarted;
+- a server that hangs once it is up (its log silent for 2 minutes, or its process stopped) is restarted;
+- the active server swaps out when its match ends, when it crashes (the process ends or Server.dll logs
+  `[FATAL]`; errors that Server.dll catches and survives do not count), when a match runs longer than
+  30 minutes, or when it logs a flood of caught errors (300 a minute for 3 minutes).
+
+If the waiting server is not ready at that moment, the active one restarts. A waiting server has a whole
+match to come back up.
 
 ## Ports
 
