@@ -4,8 +4,9 @@
 // data folders read-only). The active server gets the public game port, forwarded statelessly: each
 // packet's address is rewritten, so a swap applies to the very next packet and leaves no connection
 // state behind. Only the active server can reach the internet. The standby has no connectivity: it
-// boots into its lobby and waits there without talking to the backend. When the active server's match
-// ends, or it stops for any other reason (a crash, a restart by the supervisor, the backend or an update:
+// boots into its lobby and waits there without talking to the backend. When the active server's round is
+// over (players queue for the next match from the end-of-match screen, still connected to the old
+// server, which only keeps that connection alive until it restarts), or it stops for any other reason (a crash, a restart by the supervisor, the backend or an update:
 // its process ends or a new boot starts), and the standby is in its lobby, they swap: the
 // standby becomes active and takes the next match at once, and the old one restarts as the new standby.
 // When the standby is not ready, nothing changes and the active server restarts the normal way.
@@ -135,7 +136,7 @@ async function run() {
         if (s < off) off = 0;
         if (s > off) {
             const text = readRange(f, off, s); off = s;
-            if (!waiting && /terminating for restart/.test(text)) waiting = 'match over';
+            if (!waiting && /game flow 3 -> 4|terminating for restart/.test(text)) waiting = 'match over';
             else if (!waiting && /\*\*\* CRASH|boot attempts exhausted/.test(text)) waiting = 'crashed';
             else if (!waiting && /DllMain: begin/.test(text)) waiting = 'restarted';
         }
