@@ -7,7 +7,7 @@ import { existsSync, statSync, openSync, readSync, closeSync, writeFileSync, rea
 import { join } from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
-import { INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, readJson, readState, updateState, isConfigured, kitVersion,
+import { DATA, INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, readJson, readState, updateState, isConfigured, kitVersion,
     readIni, setIniValues, gameProcesses } from './lib.mjs';
 
 export const CONTROL_SOCK = join(STATE_DIR, 'control.sock');
@@ -220,6 +220,16 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
         (bySection[sec] ||= {})[key] = val;
     }
     for (const [sec, vals] of Object.entries(bySection)) setIniValues(file, sec, vals);
+    if ((readState().pairedModes || []).includes(m.key)) {
+        // a server pair (RV_SWAP): both of its servers get the change; each applies it at its next start
+        for (const side of ['a', 'b']) {
+            const f = join(DATA, 'swap', `${m.key}-${side}`, 'server', 'Rumbleverse', 'Binaries', 'Win64', `Config.${m.key}.ini`);
+            if (existsSync(f)) for (const [sec, vals] of Object.entries(bySection)) setIniValues(f, sec, vals);
+        }
+        if (restart) restartActive(m.key);
+        return restart ? 'Saved - the active server of the pair is restarting (the waiting one takes over and gets the settings at its next start).'
+            : 'Saved - each server of the pair uses the new settings from its next start (after its next match).';
+    }
     if (restart) await admin(`/instances/${m.id}/restart`, 'POST');
     return restart ? 'Saved - the server is restarting with the new settings.'
         : 'Saved - takes effect when the server next restarts (BR modes restart after every match).';

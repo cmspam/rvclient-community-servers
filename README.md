@@ -443,9 +443,9 @@ The host needs IP forwarding on (`net.ipv4.ip_forward=1`; the installer switches
 or Docker networks usually have it on already, but a host with only host-network containers may not). Each
 server of a pair gets its own network namespace and its own copy of the server folder under
 `data/swap/<mode>-a` and `-b` (on a filesystem with reflink copies, such as XFS or Btrfs, the copy takes
-no extra space; otherwise the game content is shared through hard links). A mode's settings and add-ons
-are copied from the main server folder at every container start, so change them as usual and restart the
-container. If the pairs cannot run (for example without the capabilities above), the modes run as single
+no extra space; otherwise the game content is shared through hard links). Settings changed with `rv set` or the web
+page reach both servers of a pair; each uses them from its next start (after its next match). Add-ons
+are copied from the main server folder at every container start. If the pairs cannot run (for example without the capabilities above), the modes run as single
 servers and the log says why.
 
 The web admin page and `rv status` show a paired mode with its active server (and which one is waiting);
