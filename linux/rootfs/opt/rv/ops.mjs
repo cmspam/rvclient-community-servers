@@ -2,7 +2,7 @@
 //
 // Everything goes through the places the Windows "rV Modes (server)" app uses: the supervisor's
 // local admin API, modes.json (modes on/off) and Config.<mode>.ini (game settings).
-import { pairStatus, restartActive } from './pairs.mjs';
+import { pairStatus, restartActive, pairsAvailable, swapModes, setSwapMode } from './pairs.mjs';
 import { existsSync, statSync, openSync, readSync, closeSync, writeFileSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -85,10 +85,8 @@ export function control(command) {
 }
 
 // ---- status ----
-function modesFile() {
-    const cfg = readJson(INSTANCES);
-    return join(SUP_DIR, cfg?.modesFile || 'modes.json');
-}
+// The owner's choice of modes. (With server pairs the main supervisor reads modes.main.json, derived from it.)
+function modesFile() { return join(SUP_DIR, 'modes.json'); }
 
 export function stateLabel(i) {
     if (!i.running) return i.modeOff ? 'OFF' : i.relaunchPending ? 'RESTARTING' : i.want === 'stopped' ? 'STOPPED' : 'DOWN';
@@ -169,7 +167,6 @@ export async function restartAll() {
 // Off: an empty server stops at once; one with players closes after its current match.
 export function setMode(mode, on) {
     const m = resolveId(mode);
-    if ((readState().pairedModes || []).includes(m.key)) throw new Error(`${m.label} runs as a server pair (RV_SWAP); change RV_SWAP in the container settings to switch it off.`);
     const f = modesFile();
     const obj = readJson(f, {});
     obj[m.key] = on === true;
@@ -234,6 +231,10 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
     return restart ? 'Saved - the server is restarting with the new settings.'
         : 'Saved - takes effect when the server next restarts (BR modes restart after every match).';
 }
+
+// Server pairs: whether they can run here, and which modes are chosen.
+export function pairsInfo() { const a = pairsAvailable(); return { available: a.ok, reason: a.reason, modes: swapModes() }; }
+export const setPair = (mode, on) => setSwapMode(mode, on);
 
 export const node = () => admin('/node');
 

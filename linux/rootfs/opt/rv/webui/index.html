@@ -171,13 +171,15 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <h2>Modes</h2>
     <div class="table-wrap">
     <table>
-      <thead><tr><th>Mode</th><th>On</th><th>State</th><th>Players</th><th class="hide-sm">Uptime</th>
+      <thead><tr><th>Mode</th><th>On</th><th title="Run as a server pair: the next match is ready the moment one ends (needs memory for two servers)">Pair</th><th>State</th><th>Players</th><th class="hide-sm">Uptime</th>
         <th class="hide-sm">Memory</th><th class="hide-sm">Restarts / crashes</th><th></th></tr></thead>
       <tbody id="tModes"></tbody>
     </table>
     </div>
     <p class="muted">Switching a mode off stops an empty server at once; a server with players closes after its match.
-      Settings changes take effect at the next restart (BR modes restart after every match).</p>
+      Settings changes take effect at the next restart (BR modes restart after every match).
+      Pair: the mode runs as two servers that take turns, so the next match is ready the moment one ends
+      (needs memory for one more server of that mode).</p>
   </div>
 
   <div class="card">
@@ -354,12 +356,14 @@ async function refresh() {
     (sup.pendingRestart ? ' - restarts when all servers are empty (supervisor update)' : '');
   $('bSupStart').classList.toggle('hidden', sup.state !== 'stopped');
   $('bSupStop').classList.toggle('hidden', sup.state === 'stopped');
+  const pairs = st.pairs || { available: false, reason: 'not supported by this image', modes: [] };
   const rows = st.instances.map(i => {
     const [label, cls] = stateOf(i);
     const mem = i.rssMb == null ? '-' : `${(i.rssMb / 1024).toFixed(2)} GB${i.swapMb ? ` (+${(i.swapMb / 1024).toFixed(1)} zram)` : ''}`;
     return `<tr>
       <td><b>${esc(i.label)}</b><div class="muted">port ${i.port}${i.pair ? ` - pair: ${esc(i.pair.active)} active, ${esc(i.pair.waiting)} ${esc(i.pair.waitingState)}` : ''}</div></td>
-      <td><label class="switch"><input type="checkbox" data-mode="${i.mode}" ${i.modeOn ? 'checked' : ''}${i.pair ? ' disabled title="Runs as a server pair (RV_SWAP)"' : ''}></label></td>
+      <td><label class="switch"><input type="checkbox" data-mode="${i.mode}" ${i.modeOn ? 'checked' : ''}></label></td>
+      <td><label class="switch"><input type="checkbox" data-pair="${i.mode}" ${pairs.modes.includes(i.mode) ? 'checked' : ''}${pairs.available ? '' : ` disabled title="${esc('Server pairs cannot run here: ' + pairs.reason)}"`}></label></td>
       <td><span class="${cls}"><b>${label}</b></span></td>
       <td>${i.players ?? 0}</td>
       <td class="hide-sm">${fmtUp(i.uptimeSec)}</td>
@@ -371,7 +375,7 @@ async function refresh() {
         <button data-set="${i.mode}" title="Settings">Settings</button>
       </div></td></tr>`;
   });
-  $('tModes').innerHTML = rows.join('') || `<tr><td colspan="8" class="muted">${esc(st.supError || 'Supervisor not running.')}</td></tr>`;
+  $('tModes').innerHTML = rows.join('') || `<tr><td colspan="9" class="muted">${esc(st.supError || 'Supervisor not running.')}</td></tr>`;
   const y = st.system;
   $('yMem').textContent = y.memAvailMb ? `${(y.memAvailMb / 1024).toFixed(1)} of ${(y.memTotalMb / 1024).toFixed(1)} GB` : '-';
   $('ySwap').textContent = y.swapTotalMb ? `${((y.swapTotalMb - y.swapFreeMb) / 1024).toFixed(1)} of ${(y.swapTotalMb / 1024).toFixed(1)} GB` : 'none';
@@ -419,6 +423,12 @@ $('tModes').onclick = e => {
 };
 $('tModes').onchange = e => {
   const c = e.target;
+  if (c.dataset.pair) {
+    const q = c.checked ? `Run ${c.dataset.pair} as a server pair? Its server finishes its current match, then two servers take turns (needs memory for one more server).`
+      : `Run ${c.dataset.pair} as a single server again? The pair stops at once (players on it are disconnected).`;
+    if (!confirm(q)) { c.checked = !c.checked; return; }
+    return act(() => post('/api/pairs', { mode: c.dataset.pair, on: c.checked }), `${c.dataset.pair}: ${c.checked ? 'pair on' : 'pair off'}.`);
+  }
   if (!c.dataset.mode) return;
   act(() => post('/api/modes', { mode: c.dataset.mode, on: c.checked }), `Mode ${c.dataset.mode} switched ${c.checked ? 'on' : 'off'}.`);
 };

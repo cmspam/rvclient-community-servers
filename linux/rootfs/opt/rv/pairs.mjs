@@ -1,6 +1,7 @@
-// Server pairs (RV_SWAP=solo,duos): an instant next match for the listed modes.
+// Server pairs: an instant next match for the chosen modes (web page "Pair" switch, `rv swap on <mode>`;
+// RV_SWAP=solo,duos sets the first choice when a server starts for the first time).
 //
-// Each listed mode that is switched on runs as two servers instead of one, both inside this container,
+// Each chosen mode that is switched on runs as two servers instead of one, both inside this container,
 // each in its own network namespace with its own copy of the server folder (data/swap/<mode>-a and -b).
 // Only one of the two is connected: the public game port of the mode (UDP) is forwarded to it, and only it
 // can reach the internet. The other one starts, waits in its lobby without any network (it never talks to
@@ -16,9 +17,15 @@
 // waits; the active one is swapped out), and so is a start that froze, stalled or takes too long.
 // If the waiting server is not ready when a match ends, nothing swaps and the server restarts as usual.
 //
+// Modes: modes.json stays the owner's choice of modes. Where pairs can run, the main supervisor reads
+// modes.main.json instead: the same, without the modes running as pairs. Pairs are switched on and off while
+// the container runs: a mode that becomes a pair closes in the main supervisor after its current match and
+// starts as a pair once its server is gone; a pair that is switched off stops and the main supervisor runs
+// the mode again.
+//
 // The container needs the host network and the rights to set up network namespaces and nftables:
 // Network=host, AddCapability=NET_ADMIN SYS_ADMIN (Podman also SecurityLabelDisable=true). Settings:
-//   RV_SWAP                   modes to run as pairs: solo,duos,... or all
+//   RV_SWAP                   modes to run as pairs on a server's first start: solo,duos,... or all
 //   RV_SWAP_ROUND_END_DELAY_SEC  seconds after Server.dll's "round over" before the swap (default 5)
 //   RV_SWAP_BOOT_LIMIT_SEC    a start not joinable after this long is restarted (default 360)
 // A mode that cannot run as a pair (e.g. missing rights) runs as a single server, as without RV_SWAP.
@@ -45,34 +52,39 @@ export function listedModes(value = env.RV_SWAP) {
     return v.split(/[\s,]+/).filter(k => MODES.some(m => m.key === k));
 }
 
-// ---- the main server's modes ----
-// The main supervisor must not run a paired mode itself: the mode is switched off in its modes file and
-// remembered in the state, so it is switched on again when RV_SWAP no longer lists it.
+// ---- the owner's choice ----
+const SUP = join(SERVER, 'Rumbleverse', 'Binaries', 'Win64', 'RVSupervisor');
+export const USER_MODES = join(SUP, 'modes.json');      // the owner's choice of modes
+const MAIN_MODES = join(SUP, 'modes.main.json');        // what the main supervisor runs (without the pairs)
 function modesFile(root) { return join(root, 'server', 'Rumbleverse', 'Binaries', 'Win64', 'RVSupervisor', 'modes.json'); }
-export function takeModesFromMain(paired, log) {
-    if (env.RV_PAIR) return [];   // a pair's own server: its modes file is set by the main one
-    const file = modesFile(DATA), modes = readJson(file, null);
-    if (!modes) return [];
-    const st = readState(), before = new Set(st.pairedModes || []);
-    const enabled = MODES.map(m => m.key).filter(k => modes[k] || before.has(k));
-    const take = paired.filter(k => enabled.includes(k));
-    let changed = false;
-    for (const k of before) if (!take.includes(k) && !modes[k]) { modes[k] = true; changed = true; log(`[pairs] ${k}: runs as a single server again`); }
-    for (const k of take) if (modes[k]) { modes[k] = false; changed = true; }
-    if (changed) writeJson(file, modes, 0o644);
-    updateState({ pairedModes: take });
-    return take;
+
+// Modes chosen to run as pairs (when they are switched on). RV_SWAP gives the first value.
+export function swapModes() {
+    const st = readState();
+    if (Array.isArray(st.swapModes)) return st.swapModes.filter(k => MODES.some(m => m.key === k));
+    return listedModes();
+}
+export function setSwapMode(key, on) {
+    const m = MODES.find(x => x.key === key);
+    if (!m) throw new Error(`Unknown mode "${key}" (solo, playground, duos, trios, squads).`);
+    const cur = new Set(swapModes());
+    if (on) cur.add(m.key); else cur.delete(m.key);
+    updateState({ swapModes: MODES.map(x => x.key).filter(k => cur.has(k)) });
+    return `${m.label} ${on ? 'runs as a server pair' : 'runs as a single server'} (applies within a few seconds; a mode becoming a pair finishes its current match first).`;
 }
 
 // ---- checks ----
 function sh(cmd, args, opts = {}) { return execFileSync(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], ...opts }).toString(); }
-export function canRun(log) {
-    try { sh('ip', ['netns', 'list']); } catch { log('[pairs] no iproute2 "ip netns" - pairs need the current image'); return false; }
-    try { sh('nft', ['list', 'tables']); } catch { log('[pairs] nftables not allowed - the container needs AddCapability=NET_ADMIN SYS_ADMIN'); return false; }
+// Can this container run pairs? { ok, reason }
+export function pairsAvailable() {
+    if (env.RV_PAIR) return { ok: false, reason: 'this is a server of a pair' };
+    try { sh('ip', ['netns', 'list']); } catch { return { ok: false, reason: 'the image has no "ip netns" (update the image)' }; }
+    try { sh('nft', ['list', 'tables']); } catch { return { ok: false, reason: 'the container needs the rights for it (AddCapability=NET_ADMIN SYS_ADMIN, see the README)' }; }
     let fwd = '0'; try { fwd = fs.readFileSync('/proc/sys/net/ipv4/ip_forward', 'utf8').trim(); } catch { /* */ }
-    if (fwd !== '1') { log('[pairs] IP forwarding is off on this host - set net.ipv4.ip_forward=1 (Podman and Docker normally do)'); return false; }
-    return true;
+    if (fwd !== '1') return { ok: false, reason: 'IP forwarding is off on this host (net.ipv4.ip_forward=1)' };
+    return { ok: true, reason: '' };
 }
+
 function uplink() {
     const r = fs.readFileSync('/proc/net/route', 'utf8').split('\n').slice(1).map(l => l.split('\t'));
     const d = r.find(f => f[1] === '00000000');
@@ -113,7 +125,7 @@ function prepareCopy(sv, log) {
         for (const d of ['wine', 'state', 'addons']) if (fs.existsSync(join(DATA, d))) sh('cp', ['-a', '--reflink=auto', join(DATA, d), join(sv.dir, d)]);
         fs.rmSync(join(sv.dir, 'state', 'control.sock'), { force: true });
         const st = join(sv.dir, 'state', 'rv.json'), j = readJson(st, null);
-        if (j) { delete j.pairedModes; writeJson(st, j); }
+        if (j) { delete j.pairedModes; delete j.swapModes; writeJson(st, j); }
         for (const f of fs.readdirSync(sv.win64)) if (/^crash_trace_.*\.log$/.test(f)) fs.rmSync(join(sv.win64, f), { force: true });   // its own history only
         log(`[pairs] ${sv.name}: server folder copied (${how})`);
     }
@@ -124,8 +136,9 @@ function prepareCopy(sv, log) {
     const modes = Object.fromEntries(MODES.map(m => [m.key, m.key === sv.mode.key]));
     writeJson(modesFile(sv.dir), modes, 0o644);
     const instFile = join(sv.win64, 'RVSupervisor', 'ds-instances.json'), inst = readJson(instFile, null);
-    if (inst && (inst.matchEndRelaunchSec !== 0 || inst.launchGapSec !== 0)) {
+    if (inst && (inst.matchEndRelaunchSec !== 0 || inst.launchGapSec !== 0 || inst.modesFile !== 'modes.json')) {
         inst.matchEndRelaunchSec = 0; inst.launchGapSec = 0;   // only one server per copy: no waits
+        inst.modesFile = 'modes.json';
         writeJson(instFile, inst, 0o644);
     }
     fs.mkdirSync(join(sv.dir, 'logs'), { recursive: true });
@@ -330,54 +343,131 @@ function runServer(sv, log, delayMs) {
     return proc;
 }
 
-// Sets everything up and runs the pairs; returns { modes, stop } (modes: the ones running as pairs).
-export async function startPairs(paired, { log = console.log, publicIp } = {}) {
-    if (!paired.length) return { modes: [], stop: async () => {} };
-    if (!canRun(log)) return { modes: [], stop: async () => {}, failed: true };
+// The main supervisor reads modes.main.json where pairs can run. Called before it starts. Earlier versions
+// switched paired modes off in modes.json itself; those are switched on again there (the owner's choice).
+export function prepareModes(log) {
+    const inst = readJson(join(SUP, 'ds-instances.json'), null), user = readJson(USER_MODES, null);
+    if (!inst || !user) return false;
+    const st = readState();
+    if (!st.modesSplit) {
+        for (const k of st.pairedModes || []) user[k] = true;
+        writeJson(USER_MODES, user, 0o644);
+        updateState({ modesSplit: true });
+    }
+    if (!fs.existsSync(MAIN_MODES)) writeJson(MAIN_MODES, Object.fromEntries(MODES.map(m => [m.key, !!user[m.key] && !swapModes().includes(m.key)])), 0o644);
+    if (inst.modesFile !== 'modes.main.json') {
+        inst.modesFile = 'modes.main.json';
+        writeJson(join(SUP, 'ds-instances.json'), inst, 0o644);
+        log('[pairs] the main supervisor now reads modes.main.json (modes.json without the server pairs)');
+    }
+    return true;
+}
+// Where pairs cannot run: the main supervisor reads the owner's modes.json again.
+export function releaseModes(log) {
+    const inst = readJson(join(SUP, 'ds-instances.json'), null);
+    if (inst && inst.modesFile === 'modes.main.json') {
+        inst.modesFile = 'modes.json';
+        writeJson(join(SUP, 'ds-instances.json'), inst, 0o644);
+        log('[pairs] pairs cannot run here - the main supervisor reads modes.json');
+    }
+    updateState({ pairedModes: [] });
+}
+
+// The main supervisor's own game server of a mode (Wine process of that instance in the main folder).
+function mainRuns(mode) {
+    for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
+        try {
+            if (!fs.readFileSync(`/proc/${pid}/cmdline`, 'latin1').includes(`RVInstance=${mode.id}`)) continue;
+            if (fs.readlinkSync(`/proc/${pid}/cwd`).startsWith(SERVER + '/')) return true;
+        } catch { /* gone */ }
+    }
+    return false;
+}
+
+// Runs the pairs the owner chose and keeps them in line with modes.json and the "Pair" setting.
+// Returns { stop }.
+export function createPairs({ log = console.log, publicIp } = {}) {
     const pub = publicIp || readState().publicIp || env.RV_PUBLIC_IP;
-    if (!pub) { log('[pairs] no public IP known - pairs need it'); return { modes: [], stop: async () => {}, failed: true }; }
     const dev = uplink();
     fs.mkdirSync(SWAP_DIR, { recursive: true });
-    const pairs = [];
-    for (const key of paired) {
-        const mode = MODES.find(m => m.key === key);
-        const p = { mode, a: server(mode, 'a'), b: server(mode, 'b') };
-        for (const s of SIDES) { prepareCopy(p[s], log); prepareNet(p[s]); }
-        pairs.push(p);
-    }
-    const active = Object.assign(Object.fromEntries(pairs.map(p => [p.mode.key, 'a'])), readJson(STATE, {}));
+    const active = readJson(STATE, {});
+    const running = new Map();   // mode key -> { p, procs, ctl }
+    let stopped = false, tick = 0, waitingLogged = new Set();
+
     const apply = () => {
-        execFileSync('nft', ['-f', '-'], { input: rules(pairs, active, pub, dev) });
+        const pairs = [...running.values()].map(r => r.p);
+        if (pairs.length) execFileSync('nft', ['-f', '-'], { input: rules(pairs, active, pub, dev) });
+        else { try { execFileSync('nft', ['delete', 'table', 'ip', 'rvpairs'], { stdio: 'ignore' }); } catch { /* none */ } }
         writeJson(STATE, active, 0o644);
+        updateState({ pairedModes: [...running.keys()] });
     };
-    apply();
-    log(`[pairs] running ${pairs.map(p => `${p.mode.label} (active ${active[p.mode.key]})`).join(', ')} as pairs: one connected, one waiting`);
+    const startPair = mode => {
+        const p = { mode, a: server(mode, 'a'), b: server(mode, 'b') };
+        for (const sd of SIDES) { prepareCopy(p[sd], log); prepareNet(p[sd]); }
+        if (!active[mode.key]) active[mode.key] = 'a';
+        const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, goneSince: 0, wasUp: false };
+        running.set(mode.key, { p, ctl, procs: [] });
+        apply();
+        // the active server starts first; the waiting one a minute and a half later
+        running.get(mode.key).procs = [runServer(p[active[mode.key]], log, 0), runServer(p[other(active[mode.key])], log, 90000)];
+        log(`[pairs] ${mode.label}: runs as a pair (active ${active[mode.key]}, the other one waits)`);
+    };
+    const stopPair = async key => {
+        const r = running.get(key);
+        if (!r) return;
+        running.delete(key);
+        apply();
+        await Promise.all(r.procs.map(x => x.stop()));
+        for (const sd of SIDES) {
+            try { sh('ip', ['netns', 'del', r.p[sd].ns]); } catch { /* */ }
+            try { sh('ip', ['link', 'del', r.p[sd].hostIf]); } catch { /* */ }
+        }
+        log(`[pairs] ${r.p.mode.label}: pair stopped`);
+    };
 
-    // the active side of each mode starts first; the waiting side a minute and a half later
-    const procs = [];
-    pairs.forEach((p, i) => {
-        procs.push(runServer(p[active[p.mode.key]], log, i * 20000));
-        procs.push(runServer(p[other(active[p.mode.key])], log, 90000 + i * 20000));
-    });
+    // modes.json + the Pair setting -> what runs where
+    let busy = false;
+    const reconcile = async () => {
+        if (busy) return;
+        busy = true;
+        try {
+            const user = readJson(USER_MODES, {}), chosen = new Set(swapModes());
+            const want = MODES.filter(m => user[m.key] && chosen.has(m.key));
+            // pairs to stop first: the main supervisor may only run the mode once its pair is gone
+            for (const key of [...running.keys()]) if (!want.some(m => m.key === key)) await stopPair(key);
+            const mainWant = Object.fromEntries(MODES.map(m => [m.key, !!user[m.key] && !chosen.has(m.key) && !running.has(m.key)]));
+            const cur = readJson(MAIN_MODES, {});
+            if (MODES.some(m => !!cur[m.key] !== mainWant[m.key])) writeJson(MAIN_MODES, mainWant, 0o644);
+            for (const m of want) {
+                if (running.has(m.key)) continue;
+                if (mainRuns(m)) {   // closes after its current match (switched off in modes.main.json)
+                    if (!waitingLogged.has(m.key)) { waitingLogged.add(m.key); log(`[pairs] ${m.label}: becomes a pair once its current server has finished its match`); }
+                    continue;
+                }
+                waitingLogged.delete(m.key);
+                try { startPair(m); } catch (e) { log(`[pairs] ${m.label}: could not start the pair: ${e.message}`); await stopPair(m.key); }
+            }
+            updateState({ pairedModes: [...running.keys()] });
+        } finally { busy = false; }
+    };
 
-    // the swap controller
-    const ctl = pairs.map(p => ({ p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[p.mode.key]].trace), waiting: '', roundOverAt: 0, goneSince: 0, wasUp: false }));
-    let stopped = false, tick = 0;
-    const describe = (w, isActive) => w.ready() ? (isActive ? 'up' : 'in its lobby') : gamePid(w.sv) ? (isActive ? 'up' : 'starting') : 'not running';
+    const describe = (w, isActive) => w.ready() ? (isActive ? 'up' : 'in its lobby') : gamePid(w.sv) ? (isActive && w.currentBoot().includes('reporting joinable') ? 'up' : 'starting') : 'not running';
     const loop = async () => {
         while (!stopped) {
+            if (tick % 2 === 0) await reconcile().catch(e => log(`[pairs] ${e.message}`));
             await new Promise(r => setTimeout(r, 1000));
             tick++;
+            const ctls = [...running.values()].map(r => r.ctl);
             if (tick % 5 === 0) {
                 try {
-                    writeJson(STATUS, { at: new Date().toISOString(), modes: Object.fromEntries(ctl.map(c => {
+                    writeJson(STATUS, { at: new Date().toISOString(), modes: Object.fromEntries(ctls.map(c => {
                         const act = active[c.p.mode.key], sb = other(act);
                         return [c.p.mode.key, { label: c.p.mode.label, active: act, activeState: describe(c.w[act], true), waiting: sb, waitingState: describe(c.w[sb], false),
                             activeDetails: details(c.p[act]), waitingDetails: details(c.p[sb]), restarts: c.restarts || 0 }];
                     })) }, 0o644);
                 } catch { /* */ }
             }
-            for (const c of ctl) {
+            for (const c of ctls) {
                 const key = c.p.mode.key, act = active[key], sb = other(act), A = c.w[act], B = c.w[sb];
                 A.observe(); B.observe();
                 const f = c.p[act].trace, s = size(f);
@@ -417,15 +507,10 @@ export async function startPairs(paired, { log = console.log, publicIp } = {}) {
     loop().catch(e => log(`[pairs] controller stopped: ${e.message}`));
 
     return {
-        modes: pairs.map(p => p.mode.key),
         stop: async () => {
             stopped = true;
-            await Promise.all(procs.map(p => p.stop()));
-            try { execFileSync('nft', ['delete', 'table', 'ip', 'rvpairs']); } catch { /* */ }
-            for (const p of pairs) for (const s of SIDES) {
-                try { sh('ip', ['netns', 'del', p[s].ns]); } catch { /* */ }
-                try { sh('ip', ['link', 'del', p[s].hostIf]); } catch { /* */ }
-            }
+            for (const key of [...running.keys()]) await stopPair(key);
+            updateState({ pairedModes: [] });
         },
     };
 }
@@ -446,11 +531,13 @@ export function restartActive(key) {
     return true;
 }
 
-// `rv swap status` / `rv swap restart <mode>` (restart the active server: the waiting one takes over)
+// `rv swap status` / `rv swap restart <mode>` (restart the active server: the waiting one takes over) /
+// `rv swap on|off <mode>` (the Pair setting)
 export function pairsCli(args) {
-    const paired = readState().pairedModes || [];
-    if (!paired.length) return console.log('No modes run as pairs (RV_SWAP).');
     const [cmd, key] = args;
+    if (cmd === 'on' || cmd === 'off') return console.log(setSwapMode(key, cmd === 'on'));
+    const paired = readState().pairedModes || [];
+    if (!paired.length) return console.log(`No modes run as pairs right now (chosen: ${swapModes().join(', ') || 'none'}).`);
     const st = readJson(STATUS, { modes: {} }), active = readJson(STATE, {});
     if (cmd === 'restart') {
         const mode = MODES.find(m => m.key === key && paired.includes(m.key));

@@ -427,8 +427,11 @@ address, game port and server identity, so to the backend the mode is still one 
 never talks to it. If the waiting server is not ready when a match ends, nothing swaps and the server
 restarts as usual.
 
-Choose the modes with `RV_SWAP` (for example `RV_SWAP=solo,duos`, or `all`). Each listed mode that is
-switched on runs as a pair, inside the same container; the other modes run as usual. A pair needs memory
+Switch it on per mode with the **Pair** switch on the web admin page, or `rv swap on <mode>` (`rv swap off
+<mode>` to go back). A mode that becomes a pair finishes its current match first; a pair that is switched off
+stops at once and the mode runs as a single server again. `RV_SWAP` (for example `RV_SWAP=solo,duos`, or
+`all`) sets the first choice when the server starts for the first time. Each chosen mode that is switched on
+runs as a pair, inside the same container; the other modes run as usual. A pair needs memory
 for two servers of that mode (2 to 3 GB each). In the container's settings (Quadlet):
 
 ```ini
@@ -446,7 +449,8 @@ server of a pair gets its own network namespace and its own copy of the server f
 no extra space; otherwise the game content is shared through hard links). Settings changed with `rv set` or the web
 page reach both servers of a pair; each uses them from its next start (after its next match). Add-ons
 are copied from the main server folder at every container start. If the pairs cannot run (for example without the capabilities above), the modes run as single
-servers and the log says why.
+servers, the log says why, and the Pair switch on the web page is greyed out with the reason. The
+installer adds the capabilities when pairs are chosen during installation.
 
 The web admin page and `rv status` show a paired mode with its active server (and which one is waiting);
 its Restart button restarts the active server, and its on/off switch is fixed by `RV_SWAP`.

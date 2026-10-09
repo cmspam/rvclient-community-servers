@@ -81,7 +81,7 @@ export function startWebUi({ manager, setupJob, startSetup, port = 8080, host = 
                 if (configured) { try { instances = await ops.instances(); } catch (e) { supError = e.message; } }
                 const n = ops.nodeInfo();
                 return send(200, {
-                    success: true, configured, supervisor: manager.state(), supError, instances, system: ops.system(),
+                    success: true, configured, supervisor: manager.state(), supError, instances, system: ops.system(), pairs: ops.pairsInfo(),
                     setup: { running: setupJob.running, error: setupJob.error, done: setupJob.done },
                     node: { ...n, regionName: REGIONS[n.region] || '' },
                 });
@@ -92,6 +92,10 @@ export function startWebUi({ manager, setupJob, startSetup, port = 8080, host = 
             const im = url.pathname.match(/^\/api\/instances\/([A-Za-z0-9_-]+)\/(start|stop|restart)$/);
             if (im && req.method === 'POST') return send(200, await ops.instanceAction(im[1], im[2]));
             if (route === 'POST /api/restart-all') return send(200, { success: true, restarted: await ops.restartAll() });
+            if (route === 'POST /api/pairs') {
+                const { mode, on } = await readBody(req);
+                return send(200, { success: true, message: ops.setPair(mode, on === true) });
+            }
             if (route === 'POST /api/modes') {
                 const { mode, on } = await readBody(req);
                 return send(200, { success: true, message: ops.setMode(mode, on === true) });

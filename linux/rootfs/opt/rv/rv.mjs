@@ -15,7 +15,7 @@ import { createManager } from './manager.mjs';
 import { CONTROL_SOCK, applySettingDefaults } from './ops.mjs';
 import { runCommand, menu, HELP } from './cli.mjs';
 import { startKitAutoUpdate } from './kit-update.mjs';
-import { listedModes, takeModesFromMain, canRun, startPairs } from './pairs.mjs';
+import { pairsAvailable, prepareModes, releaseModes, createPairs, swapModes } from './pairs.mjs';
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const cmd = process.argv[2] || 'run';
@@ -50,24 +50,18 @@ async function run() {
     const manager = createManager({ log });
     const setupJob = { running: false, error: '', done: false, log: [] };
 
-    // RV_SWAP: the listed modes run as server pairs (pairs.mjs); the main supervisor runs the others.
+    // Server pairs (pairs.mjs): where they can run, the main supervisor runs the modes that are not pairs.
     let pairs = null;
     async function startServers() {
-        const listed = listedModes().length && canRun(msg => log(msg)) ? listedModes() : [];
-        if (listedModes().length && !listed.length) log('[pairs] RV_SWAP is set but pairs cannot run here - those modes run as single servers');
-        const paired = takeModesFromMain(listed, log);
-        await manager.start();
-        if (!paired.length) return;
-        try {
-            pairs = await startPairs(paired, { log });
-            if (pairs.failed) throw new Error('see above');
-        } catch (e) {
-            // never lose the modes: they run as single servers in the main supervisor instead
-            log(`[pairs] could not start the pairs (${e.message}) - ${paired.join(', ')} run as single servers`);
-            try { if (pairs) await pairs.stop(); } catch { /* */ }
-            pairs = null;
-            takeModesFromMain([], log);
-            await manager.restart();
+        const av = pairsAvailable();
+        if (av.ok && prepareModes(log)) {
+            await manager.start();
+            try { pairs = createPairs({ log }); }
+            catch (e) { log(`[pairs] could not start (${e.message}) - all modes run as single servers`); releaseModes(log); await manager.restart(); }
+        } else {
+            if (swapModes().length) log(`[pairs] server pairs cannot run here: ${av.reason} - all modes run as single servers`);
+            releaseModes(log);
+            await manager.start();
         }
     }
 
@@ -146,10 +140,7 @@ try {
     if (cmd === 'run') await run();
     else if (cmd === 'setup') await interactiveSetup();
     else if (cmd === 'menu') await menu();
-    else if (cmd === 'swap') {
-        if (listedModes().length) (await import('./pairs.mjs')).pairsCli(process.argv.slice(3));
-        else await (await import('./swap.mjs')).main(process.argv.slice(3));
-    }
+    else if (cmd === 'swap') (await import('./pairs.mjs')).pairsCli(process.argv.slice(3));
     else if (cmd === 'reset-password') {
         ensureDirs();
         const { resetPassword } = await import('./webui/auth.mjs');
