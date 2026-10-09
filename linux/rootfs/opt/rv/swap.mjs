@@ -197,7 +197,7 @@ async function run() {
     let act = active();
     asActive(act); apply(act); asStandby(other(act));
     log(`active: ${act}, standby: ${other(act)} (public ${PUB} UDP ${PORT})${FREEZE ? ', standby frozen in its lobby' : ''}`);
-    let standbyReadyAt = 0;
+    let standbyReadyAt = 0, tick = 0;
     let off = size(trace(act)), waiting = '', goneSince = 0, roundOverAt = 0;
     for (;;) {
         await new Promise(r => setTimeout(r, 1000));
@@ -218,6 +218,13 @@ async function run() {
             if (goneSince && Date.now() - goneSince > 3000) waiting = 'process ended';
         }
         const sb = other(act);
+        // Every 10 s: the active server is never frozen or limited, the standby keeps its limits (a
+        // container that restarted on its own gets a new cgroup).
+        if (LIMITS && ++tick % 10 === 0) {
+            asActive(act);
+            if (!frozen[sb]) asStandby(sb);
+            else { try { if (!/frozen 1/.test(fs.readFileSync(join(scope(sb), 'cgroup.events'), 'utf8'))) { frozen[sb] = false; asStandby(sb); } } catch { /* */ } }
+        }
         if (FREEZE && !waiting && !frozen[sb]) {
             if (!ready(sb)) standbyReadyAt = 0;
             else if (!standbyReadyAt) standbyReadyAt = Date.now();
