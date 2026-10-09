@@ -112,8 +112,11 @@ It asks:
    *Server Status > My private servers > Set up a private server*)
 5. your **public IP** (detected for you, press Enter)
 6. which **modes** to run (it suggests how many fit in your RAM)
-7. whether to switch on **memory sharing** (recommended with more than one mode)
-8. whether to turn on the **web admin page**
+7. which modes to run as **server pairs** for an instant next match (see
+   [Instant next match](#instant-next-match-server-pairs-linux-experimental); about 2.5 GB more RAM per
+   mode, empty for none)
+8. whether to switch on **memory sharing** (recommended with more than one mode)
+9. whether to turn on the **web admin page**
 
 At the end it prints the web page address and the admin password. The server then unpacks the game,
 registers itself and downloads the server kit. That usually takes **a few minutes** (longer on a slow

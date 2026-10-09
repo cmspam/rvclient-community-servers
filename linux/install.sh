@@ -11,8 +11,8 @@
 #
 # Every question can be answered in advance through an environment variable (RV_GAME_ZIP,
 # RV_DATA_DIR, RV_EDITION=community|private, RV_SETUP_CODE, RV_CONTACT, RV_NAME, RV_PUBLIC_IP,
-# RV_MODES=solo,duos,..., RV_SLIM=on|off, RV_KSM=on|off, RV_WEBUI=on|off). With RV_UNATTENDED=1 it never asks:
-# unanswered questions take the suggested answer.
+# RV_MODES=solo,duos,..., RV_SWAP=solo,..., RV_SLIM=on|off, RV_KSM=on|off, RV_WEBUI=on|off).
+# With RV_UNATTENDED=1 it never asks: unanswered questions take the suggested answer.
 set -euo pipefail
 
 IMAGE="${RV_IMAGE:-ghcr.io/cmspam/rvclient-community-servers:latest}"
@@ -218,8 +218,32 @@ else
     echo
 fi
 
+# ---------------------------------------------------------------- server pairs
+bold "8. Instant next match (server pairs)"
+SWAP=""
+if [ -z "${MODES:-}" ]; then info "No modes chosen yet. Skipped (set RV_SWAP later, see the README)."
+elif [ "$IS_ROOT" = 0 ]; then info "Needs root. Skipped (run the installer with sudo to use it)."
+else
+    info "A mode can run as a pair of servers: while one runs a match, the other waits in its lobby,"
+    info "so the next match starts as soon as one ends. Each pair needs memory for one more server"
+    info "of that mode (about 2.5 GB). Your modes: ${MODES//,/, }. Leave empty for none."
+    ask "Modes to run as pairs (names separated by commas, or all)" "" "${RV_SWAP:-}"
+    for m in ${REPLY//,/ }; do
+        if [ "$m" = all ]; then SWAP="$MODES"; break; fi
+        [[ ",$MODES," == *",$m,"* ]] || die "\"$m\" is not one of your modes ($MODES)."
+        SWAP="${SWAP:+$SWAP,}$m"
+    done
+    if [ -n "$SWAP" ]; then
+        NEED=$(( (COUNT + $(echo "$SWAP" | tr ',' '\n' | sort -u | wc -l)) * 2500 ))
+        [ "$NEED" -gt "$MEM_MB" ] && warn "That is about $((NEED / 1024)) GB for all servers; this machine has $((MEM_MB / 1024)) GB."
+        ENV_ARGS+=(RV_SWAP="$SWAP")
+        info "Server pairs: $SWAP."
+    fi
+fi
+echo
+
 # ---------------------------------------------------------------- memory sharing (KSM)
-bold "8. Memory sharing (KSM)"
+bold "9. Memory sharing (KSM)"
 USE_KSM=0
 if [ "$KSM_KERNEL" = 0 ]; then info "Not available on this Linux kernel (needs 6.4 or newer). Skipped."
 elif [ "$IS_ROOT" = 0 ]; then info "Needs root. Skipped (run the installer with sudo to use it)."
@@ -243,7 +267,7 @@ fi
 echo
 
 # ---------------------------------------------------------------- web admin page
-bold "9. Web admin page"
+bold "10. Web admin page"
 info "A password-protected page to manage the server from your browser (port $WEB_PORT)."
 info "Everything can also be done in the terminal with: $ENGINE exec -it $NAME rv menu"
 USE_WEB=1; yesno "Turn on the web admin page?" "y" "$(onoff "${RV_WEBUI:-}")" || USE_WEB=0
@@ -265,7 +289,7 @@ if [ "$IS_ROOT" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------- start
-bold "10. Starting the server"
+bold "11. Starting the server"
 [ "$USE_KSM" = 1 ] && ENV_ARGS+=(RV_KSM=on)
 [ "$USE_SLIM" = 0 ] && ENV_ARGS+=(RV_SLIM=off)
 [ "$USE_WEB" = 0 ] && ENV_ARGS+=(RV_WEBUI=off)
@@ -297,7 +321,9 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         echo "Volume=$ZIP:/game.zip:ro,z"
         echo "Volume=$DATA:/data:Z"
         echo "AutoUpdate=registry"
-        [ "$USE_KSM" = 1 ] && echo "AddCapability=SYS_RESOURCE"
+        CAPS=""; [ "$USE_KSM" = 1 ] && CAPS="SYS_RESOURCE"; [ -n "$SWAP" ] && CAPS="${CAPS:+$CAPS }NET_ADMIN SYS_ADMIN"
+        [ -n "$CAPS" ] && echo "AddCapability=$CAPS"
+        [ -n "$SWAP" ] && echo "SecurityLabelDisable=true"
         [ "$USE_NTSYNC" = 1 ] && echo "AddDevice=/dev/ntsync"
         for e in "${ENV_ARGS[@]}"; do echo "Environment=\"$e\""; done
         echo
@@ -325,6 +351,10 @@ else
     RUN=($ENGINE run -d --name "$NAME" --restart=unless-stopped --network host
         -v "$ZIP:/game.zip:ro,z" -v "$DATA:/data:Z")
     [ "$USE_KSM" = 1 ] && RUN+=(--cap-add SYS_RESOURCE)
+    if [ -n "$SWAP" ]; then
+        RUN+=(--cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt label=disable)
+        [ "$ENGINE" = docker ] && RUN+=(--security-opt apparmor=unconfined)
+    fi
     [ "$USE_NTSYNC" = 1 ] && RUN+=(--device /dev/ntsync)
     for e in "${ENV_ARGS[@]}"; do RUN+=(-e "$e"); done
     RUN+=("$IMAGE")
