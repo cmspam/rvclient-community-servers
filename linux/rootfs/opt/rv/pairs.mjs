@@ -9,6 +9,9 @@
 // address without connection tracking, so a swap applies to the very next packet. Both copies keep the
 // server's identity, so to the backend each mode is still one server.
 //
+// Registration: every server's node agent registers the box with the backend; only the main supervisor's
+// registration is sent, with the paired modes marked as running (linux-shim.mjs).
+//
 // Health: a server that starts with parts of the map missing is not used (it is restarted while it
 // waits; the active one is swapped out), and so is a start that froze, stalled or takes too long.
 // If the waiting server is not ready when a match ends, nothing swaps and the server restarts as usual.

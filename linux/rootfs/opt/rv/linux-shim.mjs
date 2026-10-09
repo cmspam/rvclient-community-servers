@@ -17,6 +17,8 @@ import http from 'node:http';
 import https from 'node:https';
 import { basename, dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
+import { PassThrough } from 'node:stream';
+import { readState, MODES } from './lib.mjs';
 import { applySlim } from './slim.mjs';
 import { applyBots } from './bots.mjs';
 import { applyAddons } from './addons.mjs';
@@ -91,6 +93,64 @@ if (!SHARE_STATS) {
     http.request = withoutStatsRequest(http.request);
     https.request = withoutStatsRequest(https.request);
 }
+
+// Server pairs (RV_SWAP, pairs.mjs): several supervisors in one container share one server identity, and
+// each one's node agent registers the box with the backend, listing every mode as running or off by its
+// own modes file. Only the main supervisor speaks for the box: a pair server's registration is answered
+// here without being sent, and the main one reports the modes it hands to pairs as running.
+const PAIR = process.env.RV_PAIR || '';
+const HAS_PAIRS = !PAIR && /\S/.test(process.env.RV_SWAP || '') && !/^(0|off|no|false)$/i.test(process.env.RV_SWAP);
+function pathOf(args) {
+    const a = args[0];
+    try {
+        if (a instanceof URL) return a.pathname;
+        if (typeof a === 'string') return new URL(a).pathname;
+        if (a && typeof a === 'object') return String(a.path || '').split('?')[0];
+    } catch { /* not a URL */ }
+    return '';
+}
+function answeredHere(args) {
+    const cb = args.find(a => typeof a === 'function');
+    const req = new PassThrough();
+    Object.assign(req, { path: '/nodes/register', headersSent: false, setTimeout: () => req, setHeader: () => {}, destroy: () => req });
+    req.end = () => {
+        setImmediate(() => {
+            const res = new PassThrough();
+            res.statusCode = 200;
+            if (cb) cb(res);
+            req.emit('response', res);
+            res.end(JSON.stringify({ success: true, status: 'approved' }));
+        });
+        return req;
+    };
+    return req;
+}
+export function pairedOn(body, ids) {
+    let obj;
+    try { obj = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : String(body)); } catch { return body; }
+    let changed = false;
+    for (const s of obj?.servers || []) if (ids.has(s.instance) && s.off) { s.off = false; changed = true; }
+    return changed ? Buffer.from(JSON.stringify(obj)) : body;
+}
+function forPairs(request) {
+    return function (...args) {
+        if (!(PAIR || HAS_PAIRS) || pathOf(args) !== '/nodes/register') return request.apply(this, args);
+        if (PAIR) return answeredHere(args);
+        const req = request.apply(this, args);
+        const end = req.end;
+        req.end = function (data, ...rest) {
+            if (data != null && typeof data !== 'function') {
+                const paired = new Set(readState().pairedModes || []);
+                const out = pairedOn(data, new Set(MODES.filter(m => paired.has(m.key)).map(m => m.id)));
+                if (out !== data && !req.headersSent) { req.setHeader('content-length', out.length); data = out; }
+            }
+            return end.call(this, data, ...rest);
+        };
+        return req;
+    };
+}
+http.request = forPairs(http.request);
+https.request = forPairs(https.request);
 
 // Make `import { spawn } from 'node:child_process'` (and copyFileSync from 'node:fs', request
 // from 'node:http') in the upstream modules see the wrappers.
