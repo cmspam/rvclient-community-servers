@@ -5,7 +5,8 @@
 // packet's address is rewritten, so a swap applies to the very next packet and leaves no connection
 // state behind. Only the active server can reach the internet. The standby has no connectivity: it
 // boots into its lobby and waits there without talking to the backend. When the active server's match
-// ends (or it crashes, or its process is gone for good) and the standby is in its lobby, they swap: the
+// ends, or it stops for any other reason (a crash, a restart by the supervisor, the backend or an update:
+// its process ends or a new boot starts), and the standby is in its lobby, they swap: the
 // standby becomes active and takes the next match at once, and the old one restarts as the new standby.
 // When the standby is not ready, nothing changes and the active server restarts the normal way.
 //
@@ -136,10 +137,12 @@ async function run() {
             const text = readRange(f, off, s); off = s;
             if (!waiting && /terminating for restart/.test(text)) waiting = 'match over';
             else if (!waiting && /\*\*\* CRASH|boot attempts exhausted/.test(text)) waiting = 'crashed';
+            else if (!waiting && /DllMain: begin/.test(text)) waiting = 'restarted';
         }
         if (!waiting) {
+            // its process ended without a word in the trace (killed: health check, backend, update, rv restart)
             goneSince = running(act) ? 0 : (goneSince || Date.now());
-            if (goneSince && Date.now() - goneSince > 30000) waiting = 'not running for 30s';
+            if (goneSince && Date.now() - goneSince > 3000) waiting = 'process ended';
         }
         if (!waiting) continue;
         const sb = other(act);
