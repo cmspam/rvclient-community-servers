@@ -455,7 +455,13 @@ export function createPairs({ log = console.log, publicIp } = {}) {
     };
     const startPair = mode => {
         const p = { mode, a: server(mode, 'a'), b: server(mode, 'b') };
-        for (const sd of SIDES) { prepareCopy(p[sd], log); prepareNet(p[sd]); }
+        for (const sd of SIDES) {
+            prepareCopy(p[sd], log);
+            // nothing of the pair runs yet: both servers start on the main server's kit
+            const from = kitOf(join(p[sd].dir, 'server')), to = kitOf(SERVER);
+            if (to && from !== to) log(`[pairs] ${p[sd].name}: server kit ${from || 'unknown'} -> ${to} (${syncKit(p[sd])} file(s))`);
+            prepareNet(p[sd]);
+        }
         if (!active[mode.key]) active[mode.key] = 'a';
         const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, goneSince: 0, wasUp: false };
         running.set(mode.key, { p, ctl, procs: {} });
