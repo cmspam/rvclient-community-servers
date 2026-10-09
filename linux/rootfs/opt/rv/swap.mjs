@@ -195,11 +195,20 @@ function readRange(f, from, to) {
         finally { fs.closeSync(fd); }
     } catch { return ''; }
 }
-// The trace of the current boot (since the last "DllMain: begin").
+// Where each side's trace ended when its current game process appeared: a boot counts only when its
+// "DllMain: begin" comes after that, so a new process is never judged by the previous one's lines.
+const seen = { a: { pid: 0, offset: 0 }, b: { pid: 0, offset: 0 } };
+let watching = false;
+function observe(side) {
+    const pid = gamePid(side);
+    if (pid && pid !== seen[side].pid) seen[side] = { pid, offset: watching ? size(trace(side)) : 0 };
+}
+// The trace of the current boot (since the last "DllMain: begin" of the current process).
 function currentBoot(side) {
-    const f = trace(side), s = size(f), text = readRange(f, Math.max(0, s - 4000000), s);
+    const f = trace(side), s = size(f), from = Math.max(0, s - 4000000), text = readRange(f, from, s);
     const i = text.lastIndexOf('DllMain: begin');
-    return i < 0 ? '' : text.slice(i);
+    if (i < 0 || from + Buffer.byteLength(text.slice(0, i), 'latin1') < seen[side].offset) return '';
+    return text.slice(i);
 }
 const ENDED = /terminating for restart|\*\*\* CRASH|boot attempts exhausted/;
 // Sub-levels its current boot gave up on ("forced sub-levels settled ... N not loaded"): players would fall
@@ -266,6 +275,7 @@ async function run() {
     let off = size(trace(act)), waiting = '', goneSince = 0, roundOverAt = 0;
     for (;;) {
         await new Promise(r => setTimeout(r, 1000));
+        observe('a'); observe('b'); watching = true;
         const f = trace(act), s = size(f);
         if (s < off) off = 0;
         if (s > off) {
