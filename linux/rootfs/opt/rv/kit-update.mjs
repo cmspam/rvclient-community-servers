@@ -2,7 +2,7 @@
 //
 // The kit's own updater (RVSupervisor/server-updater.js) only runs when someone asks for an update:
 // the rVclient admins, the Windows rV Modes "update" button, or `rv update`. This asks for one by
-// itself: a few minutes after the container starts and then every RV_KIT_UPDATE_HOURS (default 4),
+// itself: a few minutes after the container starts and then every RV_KIT_UPDATE_HOURS (default 0.25: every 15 minutes),
 // it compares the installed kit with the newest the backend offers and installs a newer one through
 // the same call as `rv update`. The updater then restarts each mode only once it is empty (after
 // 3 h regardless) and rolls back on its own if the new build crashes twice.
@@ -42,11 +42,11 @@ export function startKitAutoUpdate(log) {
         log('[kit-update] automatic server kit updates are off (RV_KIT_AUTO_UPDATE)');
         return;
     }
-    const hours = Number(process.env.RV_KIT_UPDATE_HOURS) > 0 ? Number(process.env.RV_KIT_UPDATE_HOURS) : 4;
+    const hours = Number(process.env.RV_KIT_UPDATE_HOURS) > 0 ? Number(process.env.RV_KIT_UPDATE_HOURS) : 0.25;
     const tick = async () => {
         try { log(`[kit-update] ${await checkOnce()}`); }
         catch (e) { log(`[kit-update] check failed: ${e.message}`); }
     };
     setTimeout(() => { tick(); setInterval(tick, hours * 3600 * 1000).unref(); }, FIRST_CHECK_MS).unref();
-    log(`[kit-update] checking for a newer server kit in ${FIRST_CHECK_MS / 60000} minutes, then every ${hours} h`);
+    log(`[kit-update] checking for a newer server kit in ${FIRST_CHECK_MS / 60000} minutes, then every ${hours >= 1 ? `${hours} h` : `${Math.round(hours * 60)} minutes`}`);
 }
