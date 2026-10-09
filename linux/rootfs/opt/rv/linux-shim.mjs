@@ -18,6 +18,7 @@ import https from 'node:https';
 import { basename, dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { applySlim } from './slim.mjs';
+import { applyAddons } from './addons.mjs';
 
 const WINE = process.env.RV_WINE || 'wine';
 // RV_KSM=on: start through rv-ksm, which marks the game server's memory as mergeable, so the
@@ -31,6 +32,7 @@ function viaWine(fn) {
         if (!isExe(cmd)) return fn.call(this, cmd, args, ...rest);
         if (!Array.isArray(args)) { rest.unshift(args); args = []; }
         applySlim(cmd);
+        applyAddons(cmd);
         return KSM ? fn.call(this, 'rv-ksm', [WINE, cmd, ...args], ...rest)
             : fn.call(this, WINE, [cmd, ...args], ...rest);
     };

@@ -336,6 +336,32 @@ it on with `Enable-MMAgent -PageCombining` (as administrator, then restart).
 
 ---
 
+## Add-ons (Linux)
+
+Your own DLLs, files and small binary patches can be added to every server and stay in place through
+server kit updates. Put them in the `addons` folder inside the server's data folder (in the container:
+`/data/addons`, or set `RV_ADDONS_DIR`), with a list called `addons.list`:
+
+```
+# a DLL for the mod loader: copied next to the game and listed in a free DList.ini slot,
+# loaded <timer> seconds after the server starts (default 20)
+dll   mymod.dll  timer=20
+# any other file, copied next to the game (or to= a path inside the server folder)
+file  mymod.ini
+# change bytes in a game file, only when it is exactly the expected version (md5 before and after);
+# offsets are file offsets, bytes are hex
+patch Rumbleverse/Binaries/Win64/Server.dll  from=<md5 before> to=<md5 after>  0x26aad=00040000
+```
+
+The list is applied right before each game server starts, so a change takes effect at that mode's next
+start; running servers are not touched. Taking a line out undoes it at the next start: the DLL leaves
+`DList.ini`, copied files are deleted, and a patched file gets its original back (kept in
+`addons/.orig/`). A file that is not the expected version, for example after a kit update, is left alone
+and the server log says so. `RV_ADDONS=off` skips the add-ons.
+
+Load DLLs at least about 20 seconds after the start: loading one while the map is still loading can crash
+the server.
+
 ## Faster thread synchronization (ntsync)
 
 **Linux:** since Linux 6.14 the kernel has ntsync, which does Windows-style thread synchronization for
