@@ -50,6 +50,7 @@ const RV = new URL('./rv.mjs', import.meta.url).pathname;
 const env = process.env;
 const ROUND_END_DELAY_MS = (Number(env.RV_SWAP_ROUND_END_DELAY_SEC) || 5) * 1000;
 const BOOT_LIMIT_MS = (Number(env.RV_SWAP_BOOT_LIMIT_SEC) || 360) * 1000;
+const STATS_SETTLE_MS = 3000, ROUND_END_MAX_MS = 15000;
 const STUCK_MATCH_MS = 30 * 60 * 1000;   // like the supervisor's stuckMatchMin
 const FAULTS_PER_MIN = 300;              // like the supervisor's faultsPerMin, for 3 minutes
 const STUCK = new Set(['match running longer than any match', 'fault flood']);
@@ -596,9 +597,16 @@ export function createPairs({ log = console.log } = {}) {
                     // the active server's own match state (the supervisors' health checks are off in pairs)
                     for (const m of text.matchAll(/\[FLOW\] game flow -?\d+ -> (-?\d+)/g)) { c.flow = Number(m[1]); c.flowSince = Date.now(); }
                     c.faults = (c.faults || 0) + (text.match(/\[CRASHGUARD\]/g) || []).length;
+                    if (/\[STATS\] .* sent to the backend/.test(text)) c.statsAt = Date.now();
                 }
                 if (!c.wasUp && A.ready()) c.wasUp = true;
-                if (!c.waiting && c.roundOverAt && Date.now() - c.roundOverAt >= ROUND_END_DELAY_MS) c.waiting = 'round over';
+                // Round over: Server.dll sends every remaining player's match report (Game Records) then. The
+                // swap cuts the old server off, so it waits until no report has been queued for STATS_SETTLE_MS
+                // (each one is posted right after its line), at most ROUND_END_MAX_MS after the round.
+                if (!c.waiting && c.roundOverAt) {
+                    const since = Date.now() - c.roundOverAt, settled = !c.statsAt || Date.now() - c.statsAt >= STATS_SETTLE_MS;
+                    if (since >= ROUND_END_MAX_MS || (since >= ROUND_END_DELAY_MS && settled)) c.waiting = 'round over';
+                }
                 if (!c.waiting && c.wasUp) {
                     c.goneSince = gamePid(c.p[act]) ? 0 : (c.goneSince || Date.now());
                     if (c.goneSince && Date.now() - c.goneSince > 3000) c.waiting = 'process ended';
@@ -621,7 +629,7 @@ export function createPairs({ log = console.log } = {}) {
                     A.forget();
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - swapped: ${sb} is active, ${act} restarts and waits`);
                     if (STUCK.has(c.waiting)) A.kill(c.waiting);
-                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1; c.flow = null; c.faults = 0; c.floodMin = 0;
+                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1; c.flow = null; c.faults = 0; c.floodMin = 0; c.statsAt = 0;
                 } else if (c.waiting === 'map incomplete') {
                     A.checkHealth(); c.waiting = ''; c.roundOverAt = 0;
                 } else if (STUCK.has(c.waiting)) {
