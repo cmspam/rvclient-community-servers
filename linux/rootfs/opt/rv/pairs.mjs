@@ -30,7 +30,8 @@
 // the mode again.
 //
 // The container needs the host network and the rights to set up network namespaces and nftables:
-// Network=host, AddCapability=NET_ADMIN SYS_ADMIN (Podman also SecurityLabelDisable=true). Settings:
+// Network=host, AddCapability=NET_ADMIN SYS_ADMIN (Podman also SecurityLabelDisable=true); SYS_RESOURCE for the
+// waiting servers' low CPU priority. Settings:
 //   RV_SWAP                   modes to run as pairs on a server's first start: solo,duos,... or all
 //   RV_SWAP_ROUND_END_DELAY_SEC  seconds after Server.dll's "round over" before the swap (default 5)
 //   RV_SWAP_BOOT_LIMIT_SEC    a start not joinable after this long is restarted (default 360)
@@ -38,6 +39,7 @@
 import fs from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import os from 'node:os';
 import { DATA, SERVER, MODES, GAME_EXE, readJson, writeJson, readState, updateState } from './lib.mjs';
 
 const SWAP_DIR = join(DATA, 'swap');
@@ -293,17 +295,35 @@ function details(sv) {
     d.players = m ? Number(m[1]) : 0;
     return d;
 }
+// CPU priority: the waiting server of a pair runs at the lowest priority (nice 19), so that its starts never
+// slow down a match on the box; the active one at the normal priority (0). Every thread of the game process
+// is set (Linux priorities are per thread). Going back to 0 needs no extra rights: the pair servers are
+// started with a nice limit (RLIMIT_NICE) that allows it. Setting that limit needs CAP_SYS_RESOURCE; without
+// it, every server keeps the normal priority.
+const PRLIMIT = (() => {
+    const f = ['/usr/bin/prlimit', '/bin/prlimit'].find(x => fs.existsSync(x));
+    try { if (f) { execFileSync(f, ['--nice=20:20', 'true'], { stdio: 'ignore' }); return f; } } catch { /* not allowed */ }
+    return '';
+})();
+function setNice(pid, nice) {
+    if (!pid) return;
+    let tids = [];
+    try { tids = fs.readdirSync(`/proc/${pid}/task`); } catch { return; }
+    for (const t of tids) { try { if (os.getPriority(Number(t)) !== nice) os.setPriority(Number(t), nice); } catch { /* gone, or no rights */ } }
+}
 function procState(pid) { try { return /^State:\s+(\S)/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1] || ''; } catch { return ''; } }
 
 function createWatch(sv, log) {
     // Where the trace ended when the current game process appeared: a boot counts only when its
     // "DllMain: begin" comes after that, so a new process is never judged by the previous one's lines.
-    let seen = { pid: 0, offset: 0 }, watching = false, boot = {}, up = {}, restartedPid = 0;
+    // A process that is already there when the watch begins is judged from where the trace ended then.
+    const start = size(sv.trace);
+    let seen = { pid: 0, offset: start }, watching = false, boot = {}, up = {}, restartedPid = 0;
     const w = {
         sv,
         observe() {
             const pid = gamePid(sv);
-            if (pid && pid !== seen.pid) seen = { pid, offset: watching ? size(sv.trace) : 0 };
+            if (pid && pid !== seen.pid) seen = { pid, offset: watching ? size(sv.trace) : start };
             watching = true;
             return pid;
         },
@@ -363,7 +383,8 @@ function runServer(sv, log, delayMs) {
     const proc = { child: null, stopping: false, timer: null };
     const start = () => {
         if (proc.stopping) return;
-        const child = spawn('ip', ['netns', 'exec', sv.ns, process.execPath, RV, 'run'], {
+        const cmd = ['ip', 'netns', 'exec', sv.ns, process.execPath, RV, 'run'];
+        const child = spawn(PRLIMIT || cmd[0], PRLIMIT ? ['--nice=20:20', ...cmd] : cmd.slice(1), {
             env: { ...env, RV_DATA: sv.dir, WINEPREFIX: join(sv.dir, 'wine'), RV_WEBUI: 'off', RV_SWAP: '', RV_PAIR: sv.name },
             stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -444,7 +465,7 @@ export function createPairs({ log = console.log, publicIp } = {}) {
     fs.mkdirSync(SWAP_DIR, { recursive: true });
     const active = readJson(STATE, {});
     const running = new Map();   // mode key -> { p, procs, ctl }
-    let stopped = false, tick = 0, waitingLogged = new Set();
+    let stopped = false, tick = 0, waitingLogged = new Set(), syncBusy = false;   // one kit update at a time
 
     const apply = () => {
         const pairs = [...running.values()].map(r => r.p);
@@ -524,7 +545,7 @@ export function createPairs({ log = console.log, publicIp } = {}) {
     const updateWaiting = (c, sd) => {
         const r = running.get(c.p.mode.key), sv = c.p[sd];
         if (!r?.procs[sd]) return;
-        c.syncing = sd;
+        syncBusy = true;
         (async () => {
             const from = kitOf(join(sv.dir, 'server')) || 'unknown', to = kitOf(SERVER);
             await r.procs[sd].stop();
@@ -534,7 +555,7 @@ export function createPairs({ log = console.log, publicIp } = {}) {
                 log(`[pairs] ${sv.name}: server kit ${from} -> ${to} (${n} file(s)) while it was the waiting server`);
             } catch (e) { log(`[pairs] ${sv.name}: server kit update failed (${e.message}) - it keeps ${from}`); }
             if (running.get(c.p.mode.key) === r) r.procs[sd] = runServer(sv, log, 0);
-        })().catch(e => log(`[pairs] ${e.message}`)).finally(() => { c.syncing = ''; });
+        })().catch(e => log(`[pairs] ${e.message}`)).finally(() => { syncBusy = false; });
     };
 
     const describe = (w, isActive) => w.ready() ? (isActive ? 'up' : 'in its lobby') : gamePid(w.sv) ? (isActive && w.currentBoot().includes('reporting joinable') ? 'up' : 'starting') : 'not running';
@@ -581,10 +602,11 @@ export function createPairs({ log = console.log, publicIp } = {}) {
                     c.faults = 0;
                     if (!c.waiting && c.floodMin >= 3) c.waiting = 'fault flood';
                 }
-                if (tick % 5 === 0) { B.checkHealth(); if (!c.waiting) A.checkHealth(); followSettings(c.p); }
-                if (tick % 30 === 0 && !c.syncing && kitOf(SERVER) && kitOf(SERVER) !== kitOf(join(c.p[sb].dir, 'server'))) updateWaiting(c, sb);
+                if (tick % 5 === 0) { B.checkHealth(); if (!c.waiting) A.checkHealth(); followSettings(c.p); setNice(gamePid(c.p[act]), 0); if (PRLIMIT) setNice(gamePid(c.p[sb]), 19); }
+                if (tick % 30 === 0 && !syncBusy && kitOf(SERVER) && kitOf(SERVER) !== kitOf(join(c.p[sb].dir, 'server'))) updateWaiting(c, sb);
                 if (!c.waiting) continue;
                 if (B.ready()) {
+                    setNice(gamePid(c.p[sb]), 0);
                     const prev = active[key];
                     active[key] = sb;
                     try { apply(); } catch (e) { active[key] = prev; log(`[pairs] ${c.p.mode.label}: could not swap: ${e.message}`); continue; }

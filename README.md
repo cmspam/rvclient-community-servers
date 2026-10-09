@@ -436,12 +436,15 @@ for two servers of that mode (2 to 3 GB each). In the container's settings (Quad
 
 ```ini
 Network=host
-AddCapability=NET_ADMIN SYS_ADMIN
+AddCapability=NET_ADMIN SYS_ADMIN SYS_RESOURCE
 SecurityLabelDisable=true
 Environment=RV_SWAP=solo,duos
 ```
 
-With Docker: `--network host --cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt apparmor=unconfined`.
+With Docker: `--network host --cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --security-opt apparmor=unconfined`.
+With `SYS_RESOURCE`, the waiting server of a pair runs at the lowest CPU priority, so that its starts never
+slow down a match on the box; the active one runs at the normal priority. Without it, both run at the normal
+priority.
 The host needs IP forwarding on (`net.ipv4.ip_forward=1`; the installer switches it on for pairs, and Podman
 or Docker networks usually have it on already, but a host with only host-network containers may not). Each
 server of a pair gets its own network namespace and its own copy of the server folder under
@@ -462,7 +465,8 @@ report on their own; the main one reports a paired mode as running, with its act
 and carries out the backend's commands for it: a restart restarts the active server, and switching the mode
 off or on goes into `modes.json`. Server kit updates install into the main server folder; each server of
 a pair gets the new files while it is the waiting one (it is stopped, brought up to date and started
-again), so a pair moves to a new kit within a match or two, without stopping a match.
+again), so a pair moves to a new kit within a match or two, without stopping a match. Only one waiting server is
+updated at a time.
 
 The container watches every server of a pair from its own log, not from the backend (both servers of a pair
 share one address and port, so the backend's view never belongs to one of them):

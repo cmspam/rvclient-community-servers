@@ -324,7 +324,7 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         echo "Volume=$ZIP:/game.zip:ro,z"
         echo "Volume=$DATA:/data:Z"
         echo "AutoUpdate=registry"
-        CAPS=""; [ "$USE_KSM" = 1 ] && CAPS="SYS_RESOURCE"; [ -n "$SWAP" ] && CAPS="${CAPS:+$CAPS }NET_ADMIN SYS_ADMIN"
+        CAPS=""; { [ "$USE_KSM" = 1 ] || [ -n "$SWAP" ]; } && CAPS="SYS_RESOURCE"; [ -n "$SWAP" ] && CAPS="$CAPS NET_ADMIN SYS_ADMIN"
         [ -n "$CAPS" ] && echo "AddCapability=$CAPS"
         [ -n "$SWAP" ] && echo "SecurityLabelDisable=true"
         [ "$USE_NTSYNC" = 1 ] && echo "AddDevice=/dev/ntsync"
@@ -353,7 +353,7 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
 else
     RUN=($ENGINE run -d --name "$NAME" --restart=unless-stopped --network host
         -v "$ZIP:/game.zip:ro,z" -v "$DATA:/data:Z")
-    [ "$USE_KSM" = 1 ] && RUN+=(--cap-add SYS_RESOURCE)
+    { [ "$USE_KSM" = 1 ] || [ -n "$SWAP" ]; } && RUN+=(--cap-add SYS_RESOURCE)
     if [ -n "$SWAP" ]; then
         RUN+=(--cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt label=disable)
         [ "$ENGINE" = docker ] && RUN+=(--security-opt apparmor=unconfined)
