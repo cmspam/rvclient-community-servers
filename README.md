@@ -336,6 +336,33 @@ it on with `Enable-MMAgent -PageCombining` (as administrator, then restart).
 
 ---
 
+## Better bots (Linux, on by default)
+
+The battle royale bots run the game's own AI. On a server they mostly stand still or jump in place: they
+see 5 m ahead, look for players only within 30 m, and their paths are built while the game runs, which
+`Server.dll` limits to 2 pieces at a time, far too slow for 20 or 30 bots. The Linux image changes that
+before every server start:
+
+- `rvbots.dll` (source: [`linux/src/rvbots.c`](linux/src/rvbots.c)) is listed in `DList.ini`. It lets bots
+  look for players within 150 m, see 40 m in a 180 degree view, and go after players they have no path to
+  yet. Attacks, deliberate misses, dodges and teamwork stay as the game made them. It only acts on the game
+  build it was made for.
+- Your own `Server.dll` (part of the server kit) gets one number changed: paths built at once, 2 to 1024
+  (8 on machines with 2 CPUs or fewer). Only when the instruction that sets it is found exactly once;
+  otherwise it is left alone. Nothing from the server kit is included in this project.
+- Bot navigation is switched on in each battle royale mode's config (`BotNavigation=true`,
+  `BotNavRadius=100`), so it overrides the admin panel's bot navigation switch while this is on.
+
+| Variable | Default | |
+|---|---|---|
+| `RV_BOTS` | `on` | `off` takes `rvbots.dll` out and sets `Server.dll` back to 2 (the config is left as it is) |
+| `RV_BOT_NAV_JOBS` | 1024, or 8 on 2 CPUs or fewer | paths built at once |
+| `RV_BOT_NAV_RADIUS` | 100 | metres around each bot that get paths |
+| `RVBOTS_PLAYER_SEARCH_RADIUS` | 150 | metres in which bots look for players |
+| `RVBOTS_SIGHT_RADIUS` | 40 | metres bots see |
+| `RVBOTS_SIGHT_ANGLE` | 90 | degrees to each side bots see |
+| `RVBOTS_KEEP_UNREACHABLE_PLAYERS` | 1 | 0 = only go after players they already have a path to |
+
 ## Add-ons (Linux)
 
 Your own DLLs, files and small binary patches can be added to every server and stay in place through
