@@ -483,8 +483,8 @@ instead: `RV_SWAP_FREEZE=on` freezes its whole container once it is in its lobby
 to swap (a running server keeps using all of its memory even when idle; a frozen one uses none, and no
 CPU). It is thawed right before it takes over, and fetches its memory back within seconds.
 `RV_SWAP_STANDBY_MEMORY=1200M` and `RV_SWAP_STANDBY_CPU=idle` keep it from taking memory or CPU from the
-running match while it starts. The swap container then also needs the host's cgroup tree:
-`Volume=/sys/fs/cgroup:/host/cgroup:rw`.
+running match while it starts. The swap container then also needs the host's cgroup tree and namespace:
+`Volume=/sys/fs/cgroup:/host/cgroup:rw` and `PodmanArgs=--pid=host --cgroupns=host`.
 
 Set up one server folder the normal way first, then copy it for the second one
 (`cp -a --reflink=auto /var/srv/rvsolo-a /var/srv/rvsolo-b`), so both have the same server identity.
