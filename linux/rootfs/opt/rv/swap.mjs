@@ -39,6 +39,11 @@
 //   RV_SWAP_STANDBY_MEMORY  memory.high of the standby while it starts (e.g. 1200M): beyond that it
 //                          pushes its own memory out, so the active server keeps its memory
 //   RV_SWAP_STANDBY_CPU=idle  the standby only gets CPU time the active server does not use (cpu.idle)
+//   RV_SWAP_ACTIVE_MEMORY  memory the active server keeps when memory runs short (memory.low on its
+//                          cgroup and the ones above it, e.g. 2400M); without it a starting standby can
+//                          push the active server's memory out to swap
+//   RV_SWAP_BOOT_LIMIT_SEC a start not joinable after this long is restarted, default 360 (raise it when
+//                          the standby starts with little memory)
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
@@ -59,7 +64,9 @@ const FREEZE = on(env.RV_SWAP_FREEZE);
 const FREEZE_AFTER_MS = (Number(env.RV_SWAP_FREEZE_AFTER_SEC) || 20) * 1000;
 const STANDBY_MEMORY = env.RV_SWAP_STANDBY_MEMORY || '';
 const STANDBY_IDLE_CPU = (env.RV_SWAP_STANDBY_CPU || '') === 'idle';
-const LIMITS = FREEZE || STANDBY_MEMORY || STANDBY_IDLE_CPU;
+const ACTIVE_MEMORY = env.RV_SWAP_ACTIVE_MEMORY || '';
+const BOOT_LIMIT_MS = (Number(env.RV_SWAP_BOOT_LIMIT_SEC) || 360) * 1000;
+const LIMITS = FREEZE || STANDBY_MEMORY || STANDBY_IDLE_CPU || ACTIVE_MEMORY;
 const other = s => (s === 'a' ? 'b' : 'a');
 const log = msg => console.log(`${new Date().toISOString()} [swap] ${msg}`);
 const trace = s => join(SIDE[s].dir, 'server/Rumbleverse/Binaries/Win64', `crash_trace_${INSTANCE}.log`);
@@ -151,12 +158,25 @@ function asActive(side) {
     cg(d, 'cgroup.freeze', 0); frozen[side] = false;
     if (STANDBY_MEMORY) cg(d, 'memory.high', 'max');
     if (STANDBY_IDLE_CPU) cg(d, 'cpu.idle', 0);
+    if (ACTIVE_MEMORY && d) {
+        // protection counts only as far as every cgroup above grants it: the container, its service, the slice
+        const bytes = toBytes(ACTIVE_MEMORY);
+        for (let dir = d, i = 0; i < 3 && dir.startsWith(CGROOT) && dir !== CGROOT; i++, dir = join(dir, '..')) {
+            let cur = 0; try { cur = Number(fs.readFileSync(join(dir, 'memory.low'), 'utf8')) || 0; } catch { /* */ }
+            if (i < 2 ? cur !== bytes : cur < bytes) cg(dir, 'memory.low', bytes);
+        }
+    }
+}
+function toBytes(v) {
+    const m = /^(\d+(?:\.\d+)?)([KMG]?)$/i.exec(String(v).trim());
+    return m ? Math.round(Number(m[1]) * { '': 1, K: 1024, M: 1048576, G: 1073741824 }[m[2].toUpperCase()]) : 0;
 }
 function asStandby(side) {
     if (!LIMITS) return;
     const d = scope(side);
     if (STANDBY_MEMORY) cg(d, 'memory.high', STANDBY_MEMORY);
     if (STANDBY_IDLE_CPU) cg(d, 'cpu.idle', 1);
+    if (ACTIVE_MEMORY && d) { cg(d, 'memory.low', 0); cg(join(d, '..'), 'memory.low', 0); }
 }
 function freeze(side) {
     const d = scope(side);
@@ -196,7 +216,7 @@ function ready(side) {
 }
 // Starts that went wrong: while a server's start has not reported joinable yet, its game process is ended (its
 // supervisor starts it again) when it is stopped (state T) for 15 s, its trace gets no new lines for
-// 150 s, or it is still not in its lobby 6 minutes after the process started.
+// 150 s, or it is still not joinable RV_SWAP_BOOT_LIMIT_SEC after the process started.
 const BOOT = { a: {}, b: {} };
 function procState(pid) { try { return /^State:\s+(\S)/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1] || ''; } catch { return ''; } }
 function checkBoot(side) {
@@ -210,7 +230,7 @@ function checkBoot(side) {
     let why = '';
     if (b.stopped && now - b.stopped >= 15000) why = 'its process is stopped (frozen)';
     else if (now - b.changed >= 150000) why = `no progress in its trace for ${Math.round((now - b.changed) / 1000)}s`;
-    else if (now - b.since >= 360000) why = 'not in its lobby 6 minutes after it started';
+    else if (now - b.since >= BOOT_LIMIT_MS) why = `not joinable ${Math.round(BOOT_LIMIT_MS / 60000)} minutes after it started`;
     if (!why) return;
     log(`${side} start went wrong: ${why} - restarting it`);
     BOOT[side] = {};

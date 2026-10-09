@@ -483,13 +483,16 @@ instead: `RV_SWAP_FREEZE=on` freezes its whole container once it is in its lobby
 to swap (a running server keeps using all of its memory even when idle; a frozen one uses none, and no
 CPU). It is thawed right before it takes over, and fetches its memory back within seconds.
 `RV_SWAP_STANDBY_MEMORY=1200M` and `RV_SWAP_STANDBY_CPU=idle` keep it from taking memory or CPU from the
-running match while it starts. The swap container then also needs the host's cgroup tree and namespace:
+running match while it starts, and `RV_SWAP_ACTIVE_MEMORY=2400M` keeps the running server's memory in RAM
+(without it the starting standby pushes the running server out to swap). A standby starting with little
+memory is slow: raise `RV_SWAP_BOOT_LIMIT_SEC` (default 360) so it is not restarted for that. The swap container then also needs the host's cgroup tree and namespace:
 `Volume=/sys/fs/cgroup:/host/cgroup:rw` and `PodmanArgs=--pid=host --cgroupns=host`.
 
 Set up one server folder the normal way first, then copy it for the second one
 (`cp -a --reflink=auto /var/srv/rvsolo-a /var/srv/rvsolo-b`), so both have the same server identity.
 The swap container also watches both servers start: one that came up with parts of the map missing, or
-whose start froze, stalled (no new trace lines for 150 s) or took over 6 minutes, is restarted; a waiting
+whose start froze, stalled (no new trace lines for 150 s) or took longer than `RV_SWAP_BOOT_LIMIT_SEC`, is
+restarted; a waiting
 server has a whole match to come back up. `podman exec rvswap rv swap status` shows which one is active and whether the other is ready. Settings
 (addresses, port, folders, instance) are listed at the top of `rootfs/opt/rv/swap.mjs`.
 
