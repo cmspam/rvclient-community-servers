@@ -358,8 +358,8 @@ async function refresh() {
     const [label, cls] = stateOf(i);
     const mem = i.rssMb == null ? '-' : `${(i.rssMb / 1024).toFixed(2)} GB${i.swapMb ? ` (+${(i.swapMb / 1024).toFixed(1)} zram)` : ''}`;
     return `<tr>
-      <td><b>${esc(i.label)}</b><div class="muted">port ${i.port}</div></td>
-      <td><label class="switch"><input type="checkbox" data-mode="${i.mode}" ${i.modeOn ? 'checked' : ''}></label></td>
+      <td><b>${esc(i.label)}</b><div class="muted">port ${i.port}${i.pair ? ` - pair: ${esc(i.pair.active)} active, ${esc(i.pair.waiting)} ${esc(i.pair.waitingState)}` : ''}</div></td>
+      <td><label class="switch"><input type="checkbox" data-mode="${i.mode}" ${i.modeOn ? 'checked' : ''}${i.pair ? ' disabled title="Runs as a server pair (RV_SWAP)"' : ''}></label></td>
       <td><span class="${cls}"><b>${label}</b></span></td>
       <td>${i.players ?? 0}</td>
       <td class="hide-sm">${fmtUp(i.uptimeSec)}</td>
@@ -367,7 +367,7 @@ async function refresh() {
       <td class="hide-sm">${i.restarts} / ${i.crashes}</td>
       <td><div class="row">
         <button data-act="restart" data-id="${i.id}">Restart</button>
-        ${i.running ? `<button data-act="stop" data-id="${i.id}">Stop</button>` : `<button data-act="start" data-id="${i.id}">Start</button>`}
+        ${i.pair ? '' : i.running ? `<button data-act="stop" data-id="${i.id}">Stop</button>` : `<button data-act="start" data-id="${i.id}">Start</button>`}
         <button data-set="${i.mode}" title="Settings">Settings</button>
       </div></td></tr>`;
   });

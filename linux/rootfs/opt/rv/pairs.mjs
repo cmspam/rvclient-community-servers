@@ -219,6 +219,23 @@ function missingSubLevels(boot) {
     const m = /forced sub-levels settled[^\n]*?(\d+) not loaded/.exec(boot);
     return m ? Number(m[1]) : 0;
 }
+// Process details for the web page / rv status: memory, uptime, connected players (Server.dll's KEEPALIVE).
+function details(sv) {
+    const pid = gamePid(sv);
+    if (!pid) return { running: false };
+    const d = { running: true };
+    try {
+        const st = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+        d.rssMb = Math.round(Number(/^VmRSS:\s+(\d+)/m.exec(st)?.[1] || 0) / 1024);
+        d.swapMb = Math.round(Number(/^VmSwap:\s+(\d+)/m.exec(st)?.[1] || 0) / 1024);
+        const start = Number(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]) / 100;
+        d.uptimeSec = Math.round(Number(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]) - start);
+    } catch { /* gone */ }
+    const s = size(sv.trace), tail = readRange(sv.trace, Math.max(0, s - 200000), s);
+    const m = [...tail.matchAll(/\[KEEPALIVE\][^\n]*conns=(\d+)/g)].pop();
+    d.players = m ? Number(m[1]) : 0;
+    return d;
+}
 function procState(pid) { try { return /^State:\s+(\S)/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1] || ''; } catch { return ''; } }
 
 function createWatch(sv, log) {
@@ -355,7 +372,8 @@ export async function startPairs(paired, { log = console.log, publicIp } = {}) {
                 try {
                     writeJson(STATUS, { at: new Date().toISOString(), modes: Object.fromEntries(ctl.map(c => {
                         const act = active[c.p.mode.key], sb = other(act);
-                        return [c.p.mode.key, { label: c.p.mode.label, active: act, activeState: describe(c.w[act], true), waiting: sb, waitingState: describe(c.w[sb], false) }];
+                        return [c.p.mode.key, { label: c.p.mode.label, active: act, activeState: describe(c.w[act], true), waiting: sb, waitingState: describe(c.w[sb], false),
+                            activeDetails: details(c.p[act]), waitingDetails: details(c.p[sb]), restarts: c.restarts || 0 }];
                     })) }, 0o644);
                 } catch { /* */ }
             }
@@ -386,7 +404,7 @@ export async function startPairs(paired, { log = console.log, publicIp } = {}) {
                     try { apply(); } catch (e) { active[key] = prev; log(`[pairs] ${c.p.mode.label}: could not swap: ${e.message}`); continue; }
                     A.forget();
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - swapped: ${sb} is active, ${act} restarts and waits`);
-                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true;
+                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1;
                 } else if (c.waiting === 'map incomplete') {
                     A.checkHealth(); c.waiting = ''; c.roundOverAt = 0;
                 } else if (A.ready()) {
@@ -410,6 +428,22 @@ export async function startPairs(paired, { log = console.log, publicIp } = {}) {
             }
         },
     };
+}
+
+// For the web page and `rv status`: the controller's view of each paired mode (null when no pairs run).
+export function pairStatus() {
+    const paired = readState().pairedModes || [];
+    if (!paired.length) return null;
+    const st = readJson(STATUS, null);
+    return st && Date.now() - Date.parse(st.at) < 60000 ? st.modes : {};
+}
+export function restartActive(key) {
+    const paired = readState().pairedModes || [];
+    const mode = MODES.find(m => m.key === key && paired.includes(m.key));
+    if (!mode) return false;
+    const act = readJson(STATE, {})[key] || 'a';
+    createWatch(server(mode, act), () => {}).kill('restart requested');
+    return true;
 }
 
 // `rv swap status` / `rv swap restart <mode>` (restart the active server: the waiting one takes over)

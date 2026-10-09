@@ -448,6 +448,8 @@ are copied from the main server folder at every container start, so change them 
 container. If the pairs cannot run (for example without the capabilities above), the modes run as single
 servers and the log says why.
 
+The web admin page and `rv status` show a paired mode with its active server (and which one is waiting);
+its Restart button restarts the active server, and its on/off switch is fixed by `RV_SWAP`.
 `podman exec <container> rv swap status` shows, for each mode, which server is active and whether the
 other one is waiting in its lobby; `rv swap restart <mode>` restarts the active one (the waiting one takes
 over). The container watches every server's start: one that came up with parts of the map missing, or

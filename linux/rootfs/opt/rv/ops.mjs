@@ -2,6 +2,7 @@
 //
 // Everything goes through the places the Windows "rV Modes (server)" app uses: the supervisor's
 // local admin API, modes.json (modes on/off) and Config.<mode>.ini (game settings).
+import { pairStatus, restartActive } from './pairs.mjs';
 import { existsSync, statSync, openSync, readSync, closeSync, writeFileSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -106,6 +107,18 @@ export async function instances() {
         i.modeOn = modes[i.mode] !== false;
         i.state = stateLabel(i);
     }
+    // Modes running as server pairs (RV_SWAP): the main supervisor does not run them itself; show the
+    // active server of the pair instead.
+    const pairs = pairStatus();
+    if (pairs) for (const i of list) {
+        if (!(readState().pairedModes || []).includes(i.mode)) continue;
+        const p = pairs[i.mode], a = p?.activeDetails || {};
+        Object.assign(i, { modeOff: false, modeOn: true, want: 'running', running: !!a.running, heartbeat: p?.activeState === 'up',
+            joinable: p?.activeState === 'up', closeAfterMatch: false, relaunchPending: !a.running, players: a.players ?? 0,
+            uptimeSec: a.uptimeSec || 0, rssMb: a.rssMb ?? null, swapMb: a.swapMb ?? null, restarts: p?.restarts ?? 0, crashes: 0,
+            pair: p ? { active: p.active, waiting: p.waiting, waitingState: p.waitingState } : { active: '?', waiting: '?', waitingState: 'starting' } });
+        i.state = stateLabel(i);
+    }
     return list;
 }
 
@@ -138,6 +151,10 @@ const resolveId = target => {
 
 export async function instanceAction(target, action) {
     if (!['start', 'stop', 'restart'].includes(action)) throw new Error('action must be start, stop or restart');
+    if ((readState().pairedModes || []).includes(resolveId(target).key)) {
+        if (action === 'restart' && restartActive(resolveId(target).key)) return { success: true, message: 'restarting the active server of the pair (the waiting one takes over)' };
+        throw new Error(`${resolveId(target).label} runs as a server pair (RV_SWAP): it can only be restarted here.`);
+    }
     return admin(`/instances/${resolveId(target).id}/${action}`, 'POST');
 }
 
@@ -152,6 +169,7 @@ export async function restartAll() {
 // Off: an empty server stops at once; one with players closes after its current match.
 export function setMode(mode, on) {
     const m = resolveId(mode);
+    if ((readState().pairedModes || []).includes(m.key)) throw new Error(`${m.label} runs as a server pair (RV_SWAP); change RV_SWAP in the container settings to switch it off.`);
     const f = modesFile();
     const obj = readJson(f, {});
     obj[m.key] = on === true;
