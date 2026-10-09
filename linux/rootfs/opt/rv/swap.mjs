@@ -27,6 +27,15 @@
 //   RV_SWAP_ROUND_END_DELAY_SEC  seconds after Server.dll's "round over" before the swap, default 5 (the
 //                          players must get their results first)
 //   RV_SWAP_STATE          state folder, default /swap/state
+// For a box with memory for only one running server (needs swap, ideally zram, and the host's cgroup
+// tree mounted at RV_SWAP_CGROUP, default /host/cgroup):
+//   RV_SWAP_FREEZE=on      once the standby is in its lobby (+RV_SWAP_FREEZE_AFTER_SEC, default 20), its
+//                          whole container is frozen (cgroup freezer) and its memory pushed out to swap;
+//                          it is thawed right before it becomes active. A frozen server touches no memory
+//                          and uses no CPU; a running one, even idle, keeps using all of its memory.
+//   RV_SWAP_STANDBY_MEMORY  memory.high of the standby while it starts (e.g. 1200M): beyond that it
+//                          pushes its own memory out, so the active server keeps its memory
+//   RV_SWAP_STANDBY_CPU=idle  the standby only gets CPU time the active server does not use (cpu.idle)
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { basename, join } from 'node:path';
@@ -41,6 +50,13 @@ const SIDE = {
     b: { ip: env.RV_SWAP_B_IP || '10.90.0.11', dir: env.RV_SWAP_B_DIR || '/swap/b', host: env.RV_SWAP_B_HOST || '/var/srv/rvsolo-b' },
 };
 const STATE = join(env.RV_SWAP_STATE || '/swap/state', 'active');
+const CGROOT = env.RV_SWAP_CGROUP || '/host/cgroup';
+const on = v => /^(1|on|yes|true)$/i.test(v || '');
+const FREEZE = on(env.RV_SWAP_FREEZE);
+const FREEZE_AFTER_MS = (Number(env.RV_SWAP_FREEZE_AFTER_SEC) || 20) * 1000;
+const STANDBY_MEMORY = env.RV_SWAP_STANDBY_MEMORY || '';
+const STANDBY_IDLE_CPU = (env.RV_SWAP_STANDBY_CPU || '') === 'idle';
+const LIMITS = FREEZE || STANDBY_MEMORY || STANDBY_IDLE_CPU;
 const other = s => (s === 'a' ? 'b' : 'a');
 const log = msg => console.log(`${new Date().toISOString()} [swap] ${msg}`);
 const trace = s => join(SIDE[s].dir, 'server/Rumbleverse/Binaries/Win64', `crash_trace_${INSTANCE}.log`);
@@ -99,6 +115,54 @@ function running(side) {
     return false;
 }
 
+// The container's cgroup (on the host) of a side: from any process whose /data is that side's folder.
+function scope(side) {
+    const host = basename(SIDE[side].host);
+    for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
+        try {
+            const mounts = fs.readFileSync(`/proc/${pid}/mountinfo`, 'latin1');
+            if (!mounts.split('\n').some(l => { const f = l.split(' '); return f[4] === '/data' && basename(f[3]) === host; })) continue;
+            const path = fs.readFileSync(`/proc/${pid}/cgroup`, 'utf8').trim().split('\n').find(l => l.startsWith('0::'))?.slice(3);
+            if (!path) continue;
+            const dir = join(CGROOT, path);
+            return basename(dir) === 'container' ? join(dir, '..') : dir;
+        } catch { /* gone */ }
+    }
+    return '';
+}
+const cgWarned = new Set();
+function cg(dir, file, value) {
+    if (!dir) return false;
+    try { fs.writeFileSync(join(dir, file), String(value)); return true; }
+    catch (e) {
+        if (e.code !== 'EAGAIN' && !cgWarned.has(file)) { cgWarned.add(file); log(`could not set ${file}: ${e.message}`); }
+        return false;
+    }
+}
+const frozen = { a: false, b: false };
+// Full resources: thawed, no memory cap, normal CPU share.
+function asActive(side) {
+    if (!LIMITS) return;
+    const d = scope(side);
+    cg(d, 'cgroup.freeze', 0); frozen[side] = false;
+    if (STANDBY_MEMORY) cg(d, 'memory.high', 'max');
+    if (STANDBY_IDLE_CPU) cg(d, 'cpu.idle', 0);
+}
+function asStandby(side) {
+    if (!LIMITS) return;
+    const d = scope(side);
+    if (STANDBY_MEMORY) cg(d, 'memory.high', STANDBY_MEMORY);
+    if (STANDBY_IDLE_CPU) cg(d, 'cpu.idle', 1);
+}
+function freeze(side) {
+    const d = scope(side);
+    if (!cg(d, 'cgroup.freeze', 1)) return;
+    frozen[side] = true;
+    cg(d, 'memory.reclaim', '8G');   // usually ends early (EAGAIN) once nothing more can go
+    let mb = '?'; try { mb = Math.round(Number(fs.readFileSync(join(d, 'memory.current'), 'utf8')) / 1048576); } catch { /* */ }
+    log(`standby ${side} frozen in its lobby, ${mb} MB left in memory`);
+}
+
 const size = f => { try { return fs.statSync(f).size; } catch { return 0; } };
 function readRange(f, from, to) {
     try {
@@ -124,14 +188,16 @@ function ready(side) {
 function status() {
     const a = active(), s = other(a);
     console.log(`active: ${a} (${running(a) ? 'running' : 'not running'})`);
-    console.log(`standby: ${s} (${ready(s) ? 'ready in its lobby' : running(s) ? 'starting' : 'not running'})`);
+    let fz = false; try { fz = /frozen 1/.test(fs.readFileSync(join(scope(s), 'cgroup.events'), 'utf8')); } catch { /* */ }
+    console.log(`standby: ${s} (${ready(s) ? 'ready in its lobby' : running(s) ? 'starting' : 'not running'}${fz ? ', frozen' : ''})`);
 }
 
 async function run() {
     if (!PUB) throw new Error('RV_PUBLIC_IP is not set');
     let act = active();
-    apply(act);
-    log(`active: ${act}, standby: ${other(act)} (public ${PUB} UDP ${PORT})`);
+    asActive(act); apply(act); asStandby(other(act));
+    log(`active: ${act}, standby: ${other(act)} (public ${PUB} UDP ${PORT})${FREEZE ? ', standby frozen in its lobby' : ''}`);
+    let standbyReadyAt = 0;
     let off = size(trace(act)), waiting = '', goneSince = 0, roundOverAt = 0;
     for (;;) {
         await new Promise(r => setTimeout(r, 1000));
@@ -151,12 +217,19 @@ async function run() {
             goneSince = running(act) ? 0 : (goneSince || Date.now());
             if (goneSince && Date.now() - goneSince > 3000) waiting = 'process ended';
         }
-        if (!waiting) continue;
         const sb = other(act);
+        if (FREEZE && !waiting && !frozen[sb]) {
+            if (!ready(sb)) standbyReadyAt = 0;
+            else if (!standbyReadyAt) standbyReadyAt = Date.now();
+            else if (Date.now() - standbyReadyAt >= FREEZE_AFTER_MS) freeze(sb);
+        }
+        if (!waiting) continue;
         if (ready(sb)) {
+            asActive(sb);
             try { apply(sb); } catch (e) { log(`could not swap: ${e.message}`); continue; }
+            asStandby(act);
             log(`${waiting} on ${act} - swapped: ${sb} is active, ${act} restarts as standby`);
-            act = sb; off = size(trace(act)); waiting = ''; goneSince = 0; roundOverAt = 0;
+            act = sb; standbyReadyAt = 0; off = size(trace(act)); waiting = ''; goneSince = 0; roundOverAt = 0;
         } else if (ready(act)) {
             log(`${waiting} on ${act} - standby ${sb} was not ready; ${act} restarted and stays active`);
             waiting = ''; goneSince = 0; roundOverAt = 0;
@@ -168,8 +241,8 @@ export async function main(args) {
     const [cmd, side] = args;
     if (cmd === 'run') return run();
     if (cmd === 'status') return status();
-    if (cmd === 'now') { const s = other(active()); if (!ready(s)) return console.log(`standby ${s} is not ready`); apply(s); return console.log(`swapped: ${s} is active`); }
-    if (cmd === 'apply' && (side === 'a' || side === 'b')) { apply(side); return console.log(`${side} is active`); }
+    if (cmd === 'now') { const a = active(), s = other(a); if (!ready(s)) return console.log(`standby ${s} is not ready`); asActive(s); apply(s); asStandby(a); return console.log(`swapped: ${s} is active`); }
+    if (cmd === 'apply' && (side === 'a' || side === 'b')) { asActive(side); apply(side); asStandby(other(side)); return console.log(`${side} is active`); }
     console.log('usage: rv swap run | status | now | apply a|b');
     process.exitCode = 1;
 }
