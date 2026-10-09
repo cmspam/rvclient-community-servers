@@ -5,14 +5,14 @@
 # Built from src/: rv-ksm, which opts the game servers into KSM memory sharing (RV_KSM=on), and
 # rvslim.dll, which frees memory a game server never uses (RV_SLIM, on by default), and rvbots.dll,
 # which makes the battle royale bots look for players (RV_BOTS, on by default).
-FROM docker.io/library/alpine:latest AS build
+FROM public.ecr.aws/docker/library/alpine:latest AS build
 RUN apk add --no-cache build-base mingw-w64-gcc
 COPY src/ /src/
 RUN gcc -O2 -static -s -o /src/rv-ksm /src/rv-ksm.c \
  && x86_64-w64-mingw32-gcc -O2 -Wall -shared -s -o /src/rvslim.dll /src/rvslim.c \
  && x86_64-w64-mingw32-gcc -O2 -Wall -shared -s -o /src/rvbots.dll /src/rvbots.c
 
-FROM docker.io/library/alpine:latest
+FROM public.ecr.aws/docker/library/alpine:latest
 
 # Podman's auto-update (podman-auto-update.timer) pulls newer images of this tag by itself.
 LABEL io.containers.autoupdate=registry \
