@@ -112,9 +112,9 @@ It asks:
    *Server Status > My private servers > Set up a private server*)
 5. your **public IP** (detected for you, press Enter)
 6. which **modes** to run (it suggests how many fit in your RAM)
-7. which modes to run as **server pairs** for an instant next match (see
-   [Instant next match](#instant-next-match-server-pairs-linux-experimental); about 2.5 GB more RAM per
-   mode, empty for none)
+7. which modes get **Zero Wait**, no waiting between matches (see
+   [Zero Wait](#zero-wait-no-waiting-between-matches-linux); about 2.5 GB more RAM per mode; it suggests
+   the modes that fit, empty for none, and it can be switched per mode later on the web page)
 8. whether to switch on **memory sharing** (recommended with more than one mode)
 9. whether to turn on the **web admin page**
 
@@ -295,6 +295,11 @@ it restarts the container as soon as a new image appears, in the middle of a mat
 `sudo podman pull ghcr.io/cmspam/rvclient-community-servers:latest` and re-create the container (or run the
 installer again). `RV_IMAGE_AUTO_UPDATE=off` turns the check off. Your data stays in the data folder.
 
+An existing Quadlet with `AutoUpdate=registry`: replace that line with `Pull=newer`, run
+`sudo systemctl daemon-reload`, and restart the server once (or run the installer again, which writes the
+Quadlet anew). The installer sets up Docker as a systemd service that pulls a newer image at each start
+(`docker run --pull always`), so the same updates work there.
+
 Data folder contents: `server/` (game and server kit), `state/` (registration and web login; keep it private),
 `logs/`, `wine/`. To move the server to another machine, stop it and copy the whole folder.
 
@@ -432,10 +437,10 @@ sudo ls -l /proc/$(pgrep -x wineserver | head -1)/fd | grep -c ntsync
 
 Without ntsync the server works the same way, using Wine's older method.
 
-## Instant next match: server pairs (Linux, experimental)
+## Zero Wait: no waiting between matches (Linux)
 
-A server needs a minute or more to start its next match. With enough memory, a mode can run as a pair
-of servers that take turns: while one runs a match, the other has already started and waits in its
+A server needs a minute or more to start its next match. With Zero Wait, players queue straight into
+the next match instead. With enough memory, a mode runs as a pair of servers that take turns: while one runs a match, the other has already started and waits in its
 lobby, with no network at all. A few seconds after the round is over (once the players have their
 results and the server has sent the match reports for Game Records, at most 15 seconds), they swap: the waiting server gets the mode's game port and its connection, and the next
 match starts at once. The other one restarts and becomes the one waiting. Both use the same public
@@ -443,7 +448,7 @@ address, game port and server identity, so to the backend the mode is still one 
 never talks to it. If the waiting server is not ready when a match ends, nothing swaps and the server
 restarts as usual.
 
-Switch it on per mode with the **Pair** switch on the web admin page, or `rv swap on <mode>` (`rv swap off
+Switch it on per mode with the **Zero Wait** switch on the web admin page, or `rv swap on <mode>` (`rv swap off
 <mode>` to go back). A mode that becomes a pair finishes its current match first; a pair that is switched off
 stops at once and the mode runs as a single server again. `RV_SWAP` (for example `RV_SWAP=solo,duos`, or
 `all`) sets the first choice when the server starts for the first time. Each chosen mode that is switched on
@@ -462,7 +467,7 @@ With `SYS_RESOURCE`, the waiting server of a pair runs at the lowest CPU priorit
 slow down a match on the box; the active one runs at the normal priority. Without it, both run at the normal
 priority.
 The container's network needs IP forwarding on (`net.ipv4.ip_forward=1`). With `Network=host` that is the
-host's setting (the installer switches it on for pairs; a host with only host-network containers may have
+host's setting (the installer switches it on; a host with only host-network containers may have
 it off). The container can also use its own network (a Podman or Docker network, or another container's
 network such as a VPN tunnel): the game ports must then reach the container's address, and forwarding is
 set for that network (Quadlet `Sysctl=net.ipv4.ip_forward=1`, Docker `--sysctl net.ipv4.ip_forward=1`; for
@@ -473,8 +478,9 @@ id (`solo-01a`, `solo-01b`: its own log files next to the game) and its own Wine
 `data/swap/<mode>-a` and `-b`. Settings changed with `rv set` or the web page apply to both servers of a
 pair from their next start (after their next match). The waiting server has no route out: anything it
 tries to reach fails at once, as with no network. If the pairs cannot run (for example without the capabilities above), the modes run as single
-servers, the log says why, and the Pair switch on the web page is greyed out with the reason. The
-installer adds the capabilities when pairs are chosen during installation.
+servers, the log says why, and the Zero Wait switch on the web page is greyed out with the reason. The
+installer (run as root) always adds the capabilities and switches IP forwarding on, so Zero Wait can be
+switched on per mode at any time.
 
 The web admin page and `rv status` show a paired mode with its active server (and which one is waiting);
 its Restart button restarts the active server (the waiting one takes over), and its On switch starts or

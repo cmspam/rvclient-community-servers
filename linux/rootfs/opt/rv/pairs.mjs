@@ -1,4 +1,4 @@
-// Server pairs: an instant next match for the chosen modes (web page "Pair" switch, `rv swap on <mode>`;
+// Server pairs ("Zero Wait"): no waiting between matches for the chosen modes (web page "Zero Wait" switch, `rv swap on <mode>`;
 // RV_SWAP=solo,duos sets the first choice when a server starts for the first time).
 //
 // Each chosen mode that is switched on runs as two servers instead of one. This controller starts their game
@@ -88,7 +88,7 @@ export function setSwapMode(key, on) {
     const cur = new Set(swapModes());
     if (on) cur.add(m.key); else cur.delete(m.key);
     updateState({ swapModes: MODES.map(x => x.key).filter(k => cur.has(k)) });
-    return `${m.label} ${on ? 'runs as a server pair' : 'runs as a single server'} (applies within a few seconds; a mode becoming a pair finishes its current match first).`;
+    return `${m.label}: Zero Wait ${on ? 'on' : 'off (a single server)'} (applies within a few seconds; switching it on lets the current match finish first).`;
 }
 
 // ---- checks ----
@@ -628,7 +628,7 @@ export function pairsCli(args) {
     const [cmd, key] = args;
     if (cmd === 'on' || cmd === 'off') return console.log(setSwapMode(key, cmd === 'on'));
     const paired = readState().pairedModes || [];
-    if (!paired.length) return console.log(`No modes run as pairs right now (chosen: ${swapModes().join(', ') || 'none'}).`);
+    if (!paired.length) return console.log(`No mode runs with Zero Wait right now (chosen: ${swapModes().join(', ') || 'none'}).`);
     const st = readJson(STATUS, { modes: {} }), active = readJson(STATE, {});
     if (cmd === 'restart') {
         const mode = MODES.find(m => m.key === key && paired.includes(m.key));

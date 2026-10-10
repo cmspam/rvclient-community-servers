@@ -11,7 +11,7 @@
 #
 # Every question can be answered in advance through an environment variable (RV_GAME_ZIP,
 # RV_DATA_DIR, RV_EDITION=community|private, RV_SETUP_CODE, RV_CONTACT, RV_NAME, RV_PUBLIC_IP,
-# RV_MODES=solo,duos,..., RV_SWAP=solo,..., RV_SLIM=on|off, RV_KSM=on|off, RV_WEBUI=on|off).
+# RV_MODES=solo,duos,..., RV_SWAP=solo,... (Zero Wait), RV_SLIM=on|off, RV_KSM=on|off, RV_WEBUI=on|off).
 # With RV_UNATTENDED=1 it never asks: unanswered questions take the suggested answer.
 set -euo pipefail
 
@@ -218,29 +218,41 @@ else
     echo
 fi
 
-# ---------------------------------------------------------------- server pairs
-bold "8. Instant next match (server pairs)"
+# ---------------------------------------------------------------- Zero Wait (server pairs)
+bold "8. Zero Wait (no waiting between matches)"
 SWAP=""
-if [ -z "${MODES:-}" ]; then info "No modes chosen yet. Skipped (set RV_SWAP later, see the README)."
-elif [ "$IS_ROOT" = 0 ]; then info "Needs root. Skipped (run the installer with sudo to use it)."
+if [ "$IS_ROOT" = 0 ]; then
+    info "Zero Wait needs network rights a container only gets when installed as root. Skipped"
+    info "(install with sudo to be able to use it)."
 else
-    info "A mode can run as a pair of servers: while one runs a match, the other waits in its lobby,"
-    info "so the next match starts as soon as one ends. Each pair needs memory for one more server"
-    info "of that mode (about 2.5 GB). Your modes: ${MODES//,/, }. Leave empty for none."
-    ask "Modes to run as pairs (names separated by commas, or all)" "" "${RV_SWAP:-}"
-    for m in ${REPLY//,/ }; do
-        if [ "$m" = all ]; then SWAP="$MODES"; break; fi
-        [[ ",$MODES," == *",$m,"* ]] || die "\"$m\" is not one of your modes ($MODES)."
-        SWAP="${SWAP:+$SWAP,}$m"
-    done
-    if [ -n "$SWAP" ]; then
-        NEED=$(( (COUNT + $(echo "$SWAP" | tr ',' '\n' | sort -u | wc -l)) * 2500 ))
-        [ "$NEED" -gt "$MEM_MB" ] && warn "That is about $((NEED / 1024)) GB for all servers; this machine has $((MEM_MB / 1024)) GB."
-        ENV_ARGS+=(RV_SWAP="$SWAP")
-        # the container forwards between its servers and the internet
-        printf '# Server pairs (RV_SWAP): the Rumbleverse container forwards between its servers and the internet.\nnet.ipv4.ip_forward = 1\n' > /etc/sysctl.d/80-rvserver-forward.conf
-        sysctl -q -w net.ipv4.ip_forward=1
-        info "Server pairs: $SWAP (IP forwarding switched on, also after a reboot)."
+    # The rights Zero Wait needs are always given, so it can be switched on per mode later on the web page.
+    printf '# Rumbleverse server (Zero Wait): the container forwards between its game servers and the internet.\nnet.ipv4.ip_forward = 1\n' > /etc/sysctl.d/80-rvserver-forward.conf
+    sysctl -q -w net.ipv4.ip_forward=1
+    if [ -z "${MODES:-}" ]; then info "No modes chosen yet: switch it on later on the web page (Zero Wait switch) or with rv swap on <mode>."
+    else
+        info "Normally a mode needs a minute or two between matches while its server restarts. With Zero Wait"
+        info "a second server of that mode is already started and waiting, so players queue straight into the"
+        info "next match. It needs memory for one more server of that mode (about $((EACH / 1000)).$(( (EACH % 1000) / 100 )) GB)."
+        # Suggest the battle royale modes (in the order chosen) that still fit next to the modes chosen.
+        LEFT=$(( USABLE - FIRST - (COUNT - 1) * EACH )); DEF_SWAP=""
+        for m in solo duos trios squads; do
+            [[ ",$MODES," == *",$m,"* ]] || continue
+            [ "$LEFT" -ge "$EACH" ] || break
+            DEF_SWAP="${DEF_SWAP:+$DEF_SWAP,}$m"; LEFT=$(( LEFT - EACH ))
+        done
+        info "Your modes: ${MODES//,/, }. ${DEF_SWAP:+Memory for Zero Wait in: ${DEF_SWAP//,/, }. }Leave empty for none."
+        ask "Modes with Zero Wait (names separated by commas, or all)" "$DEF_SWAP" "${RV_SWAP:-}"
+        for m in ${REPLY//,/ }; do
+            if [ "$m" = all ]; then SWAP="$MODES"; break; fi
+            [[ ",$MODES," == *",$m,"* ]] || die "\"$m\" is not one of your modes ($MODES)."
+            SWAP="${SWAP:+$SWAP,}$m"
+        done
+        if [ -n "$SWAP" ]; then
+            NEED=$(( FIRST + (COUNT - 1 + $(echo "$SWAP" | tr ',' '\n' | sort -u | wc -l)) * EACH ))
+            [ "$NEED" -gt "$USABLE" ] && warn "That is about $((NEED / 1024)) GB for all servers; this machine has $((MEM_MB / 1024)) GB."
+            ENV_ARGS+=(RV_SWAP="$SWAP")
+            info "Zero Wait: ${SWAP//,/, }. It can be switched per mode at any time on the web page."
+        else info "No Zero Wait for now. It can be switched on per mode at any time on the web page."; fi
     fi
 fi
 echo
@@ -324,9 +336,10 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         echo "Volume=$ZIP:/game.zip:ro,z"
         echo "Volume=$DATA:/data:Z"
         echo "Pull=newer"   # a newer image is taken at a start; the container restarts for it when its servers are empty
-        CAPS=""; { [ "$USE_KSM" = 1 ] || [ -n "$SWAP" ]; } && CAPS="SYS_RESOURCE"; [ -n "$SWAP" ] && CAPS="$CAPS NET_ADMIN SYS_ADMIN"
+        # Zero Wait: network namespaces and nftables; SYS_RESOURCE also for KSM and the waiting servers' priority
+        CAPS=""; [ "$USE_KSM" = 1 ] && CAPS="SYS_RESOURCE"; [ "$IS_ROOT" = 1 ] && CAPS="SYS_RESOURCE NET_ADMIN SYS_ADMIN"
         [ -n "$CAPS" ] && echo "AddCapability=$CAPS"
-        [ -n "$SWAP" ] && echo "SecurityLabelDisable=true"
+        [ "$IS_ROOT" = 1 ] && echo "SecurityLabelDisable=true"
         [ "$USE_NTSYNC" = 1 ] && echo "AddDevice=/dev/ntsync"
         for e in "${ENV_ARGS[@]}"; do echo "Environment=\"$e\""; done
         echo
@@ -349,18 +362,47 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
     fi
     info "Installed as a systemd service ($NAME.service): starts at boot, updates itself."
 else
-    RUN=($ENGINE run -d --name "$NAME" --restart=unless-stopped --network host
-        -v "$ZIP:/game.zip:ro,z" -v "$DATA:/data:Z")
-    { [ "$USE_KSM" = 1 ] || [ -n "$SWAP" ]; } && RUN+=(--cap-add SYS_RESOURCE)
-    if [ -n "$SWAP" ]; then
-        RUN+=(--cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt label=disable)
-        [ "$ENGINE" = docker ] && RUN+=(--security-opt apparmor=unconfined)
+    ARGS=(--name "$NAME" --network host -v "$ZIP:/game.zip:ro,z" -v "$DATA:/data:Z")
+    if [ "$IS_ROOT" = 1 ]; then
+        ARGS+=(--cap-add SYS_RESOURCE --cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt label=disable)
+        [ "$ENGINE" = docker ] && ARGS+=(--security-opt apparmor=unconfined)
+    elif [ "$USE_KSM" = 1 ]; then ARGS+=(--cap-add SYS_RESOURCE); fi
+    [ "$USE_NTSYNC" = 1 ] && ARGS+=(--device /dev/ntsync)
+    for e in "${ENV_ARGS[@]}"; do ARGS+=(-e "$e"); done
+    if [ "$ENGINE" = docker ] && [ "$IS_ROOT" = 1 ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+        # A systemd service that pulls a newer image at every start (docker run --pull always), so the
+        # container's own image updates (it restarts for a newer image once its servers are empty) work.
+        DOCKER_BIN="$(command -v docker)"; UNIT="/etc/systemd/system/$NAME.service"
+        {
+            echo "# Rumbleverse server - written by install.sh"
+            echo "[Unit]"
+            echo "Description=Rumbleverse server"
+            echo "Wants=network-online.target docker.service"
+            echo "After=network-online.target docker.service"
+            echo
+            echo "[Service]"
+            echo "ExecStartPre=-$DOCKER_BIN rm -f $NAME"
+            # systemd quoting: each argument in double quotes; \ and " escaped, % and $ doubled
+            sdq() { local a="$1"; a="${a//\\/\\\\}"; a="${a//\"/\\\"}"; a="${a//%/%%}"; a="${a//\$/\$\$}"; printf ' "%s"' "$a"; }
+            printf 'ExecStart=%s run --rm --pull always' "$DOCKER_BIN"; for x in "${ARGS[@]}" "$IMAGE"; do sdq "$x"; done; echo
+            echo "ExecStop=$DOCKER_BIN stop -t 80 $NAME"
+            echo "Restart=always"
+            echo "TimeoutStartSec=900"
+            echo "TimeoutStopSec=90"
+            echo
+            echo "[Install]"
+            echo "WantedBy=multi-user.target"
+        } > "$UNIT"
+        chmod 600 "$UNIT"
+        systemctl daemon-reload
+        systemctl enable --now "$NAME.service" >/dev/null 2>&1
+        QUADLET="$UNIT"
+        info "Installed as a systemd service ($NAME.service): starts at boot, updates itself."
+    else
+        $ENGINE run -d --restart=unless-stopped "${ARGS[@]}" "$IMAGE" >/dev/null
+        info "Started (restarts by itself; make sure $ENGINE starts at boot)."
+        info "Image updates: run the installer again from time to time (or pull the image and re-create the container)."
     fi
-    [ "$USE_NTSYNC" = 1 ] && RUN+=(--device /dev/ntsync)
-    for e in "${ENV_ARGS[@]}"; do RUN+=(-e "$e"); done
-    RUN+=("$IMAGE")
-    "${RUN[@]}" >/dev/null
-    info "Started (restarts by itself; make sure $ENGINE starts at boot)."
 fi
 
 # ---------------------------------------------------------------- result
