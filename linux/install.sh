@@ -323,7 +323,7 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         echo "Network=host"
         echo "Volume=$ZIP:/game.zip:ro,z"
         echo "Volume=$DATA:/data:Z"
-        echo "AutoUpdate=registry"
+        echo "Pull=newer"   # a newer image is taken at a start; the container restarts for it when its servers are empty
         CAPS=""; { [ "$USE_KSM" = 1 ] || [ -n "$SWAP" ]; } && CAPS="SYS_RESOURCE"; [ -n "$SWAP" ] && CAPS="$CAPS NET_ADMIN SYS_ADMIN"
         [ -n "$CAPS" ] && echo "AddCapability=$CAPS"
         [ -n "$SWAP" ] && echo "SecurityLabelDisable=true"
@@ -342,11 +342,9 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
     if [ "$IS_ROOT" = 1 ]; then
         systemctl daemon-reload
         systemctl start "$NAME.service"
-        systemctl enable podman-auto-update.timer >/dev/null 2>&1 || true
     else
         systemctl --user daemon-reload
         systemctl --user start "$NAME.service"
-        systemctl --user enable podman-auto-update.timer >/dev/null 2>&1 || true
         loginctl enable-linger "$USER" >/dev/null 2>&1 || warn "Could not enable linger: the server may stop when you log out."
     fi
     info "Installed as a systemd service ($NAME.service): starts at boot, updates itself."

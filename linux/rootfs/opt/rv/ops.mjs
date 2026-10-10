@@ -270,11 +270,7 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
     }
     for (const [sec, vals] of Object.entries(bySection)) setIniValues(file, sec, vals);
     if ((readState().pairedModes || []).includes(m.key)) {
-        // a server pair (RV_SWAP): both of its servers get the change; each applies it at its next start
-        for (const side of ['a', 'b']) {
-            const f = join(DATA, 'swap', `${m.key}-${side}`, 'server', 'Rumbleverse', 'Binaries', 'Win64', `Config.${m.key}.ini`);
-            if (existsSync(f)) for (const [sec, vals] of Object.entries(bySection)) setIniValues(f, sec, vals);
-        }
+        // a server pair: both of its servers read this file; each applies it at its next start
         if (restart) restartActive(m.key);
         return restart ? 'Saved - the active server of the pair is restarting (the waiting one takes over and gets the settings at its next start).'
             : 'Saved - each server of the pair uses the new settings from its next start (after its next match).';

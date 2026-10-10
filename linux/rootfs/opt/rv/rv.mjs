@@ -15,6 +15,7 @@ import { createManager } from './manager.mjs';
 import { CONTROL_SOCK, applySettingDefaults } from './ops.mjs';
 import { runCommand, menu, HELP } from './cli.mjs';
 import { startKitAutoUpdate } from './kit-update.mjs';
+import { startImageAutoUpdate } from './image-update.mjs';
 import { pairsAvailable, prepareModes, releaseModes, createPairs, swapModes } from './pairs.mjs';
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -76,8 +77,7 @@ async function run() {
     }
 
     startControlSocket(manager, setupJob);
-    // a pair server's kit is the main server's: pairs.mjs carries updates into its folder
-    if (!process.env.RV_PAIR) startKitAutoUpdate(log);
+    startKitAutoUpdate(log);
     if (webUiEnabled) {
         const { ensureAuth } = await import('./webui/auth.mjs');
         const { startWebUi } = await import('./webui/server.mjs');
@@ -99,6 +99,9 @@ async function run() {
     }
 
     let stopping = false;
+    // A newer image: stop everything cleanly and exit; the service manager starts the container again,
+    // pulling the new image (Quadlet Pull=newer).
+    startImageAutoUpdate(log, () => shutdown('image update'));
     const shutdown = async sig => {
         if (stopping) return;
         stopping = true;

@@ -1,27 +1,29 @@
 // Server pairs: an instant next match for the chosen modes (web page "Pair" switch, `rv swap on <mode>`;
 // RV_SWAP=solo,duos sets the first choice when a server starts for the first time).
 //
-// Each chosen mode that is switched on runs as two servers instead of one, both inside this container,
-// each in its own network namespace with its own copy of the server folder (data/swap/<mode>-a and -b).
-// Only one of the two is connected: the public game port of the mode (UDP) is forwarded to it, and only it
-// can reach the internet. The other one starts, waits in its lobby without any network (it never talks to
-// the backend) and takes over a few seconds after the active server's round is over, so the next match
-// starts at once; the old one restarts and becomes the waiting one. The forwarding rewrites each packet's
-// address without connection tracking, so a swap applies to the very next packet. Both copies keep the
-// server's identity, so to the backend each mode is still one server.
+// Each chosen mode that is switched on runs as two servers instead of one. This controller starts their game
+// processes itself, from the one server folder every mode uses, each in its own network namespace: both
+// listen on the mode's game port at their own address, and only one of the two is connected - the public
+// game port (UDP) is forwarded to it. The other one starts, waits in its lobby with no route out (it never
+// talks to the backend) and takes over a few seconds after the active server's round is over, so the next
+// match starts at once; the old one restarts and becomes the waiting one. The forwarding rewrites each
+// packet's address without connection tracking, so a swap applies to the very next packet. Both servers
+// read the mode's Config.<mode>.ini and announce the same address and port, so to the backend each mode is
+// still one server. Each has its own instance id (solo-01a / solo-01b: its log files) and its own Wine
+// prefix (data/swap/<mode>-<side>/wine); the game files and settings are shared.
 //
-// Backend: only the main supervisor's node agent talks to the backend. The pair servers' agents are answered
-// inside their own process; the main one reports the paired modes as running (with the active server's
-// state) and carries out the backend's commands for them (linux-shim.mjs). Server kit updates go into the
-// main server folder and reach each pair server while it is the waiting one.
+// Backend: only the main supervisor's node agent talks to the backend. It reports the paired modes as
+// running (with the active server's state) and carries out the backend's commands for them
+// (linux-shim.mjs). A server kit update installs into the server folder as usual; a running server keeps the
+// files it has open, and each pair server uses the new ones from its next start - the waiting one is
+// restarted for it (one at a time on the box).
 //
-// Health: a server that starts with parts of the map missing is not used (it is restarted while it
-// waits; the active one is swapped out), and so is a start that froze, stalled or takes too long, or a
-// server that hangs once it is up. The supervisors' own health checks are off in the pair servers (they
-// judge by the backend's row, which both servers of a pair share); this controller watches each server's
-// own trace instead: a crash ("[FATAL]", or the process ending), a match running longer than any match
-// (30 min), a flood of caught faults.
-// If the waiting server is not ready when a match ends, nothing swaps and the server restarts as usual.
+// Health, from each server's own state (Server.dll's status file where it writes one, otherwise its trace):
+// a start that comes up with parts of the map missing is not used (it is restarted while it waits; the
+// active one is swapped out), and so is a start that froze, stalled or takes too long, or a server that hangs
+// once it is up; the active server is swapped out when it crashes ("[FATAL]", or the process ending), when a
+// match runs longer than any match (30 min) or on a flood of caught faults. If the waiting server is not
+// ready at that moment, the active one restarts instead.
 //
 // Modes: modes.json stays the owner's choice of modes. Where pairs can run, the main supervisor reads
 // modes.main.json instead: the same, without the modes running as pairs. Pairs are switched on and off while
@@ -41,19 +43,24 @@ import fs from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import os from 'node:os';
-import { DATA, SERVER, MODES, GAME_EXE, readJson, writeJson, readState, updateState } from './lib.mjs';
+import { DATA, SERVER, WIN64, SUP_DIR, INSTANCES, MODES, GAME_EXE, readJson, writeJson, readState, updateState, isPairInstance } from './lib.mjs';
+import { applySlim } from './slim.mjs';
+import { applyBots } from './bots.mjs';
+import { applyAddons } from './addons.mjs';
 
 const SWAP_DIR = join(DATA, 'swap');
 const STATE = join(SWAP_DIR, 'active.json');
 const STATUS = join(SWAP_DIR, 'status.json');   // the controller's view, for `rv swap status`
-const RV = new URL('./rv.mjs', import.meta.url).pathname;
+const EXE = join(WIN64, GAME_EXE);
 const env = process.env;
+const KSM = /^(1|on|yes|true)$/i.test(env.RV_KSM || '');
 const ROUND_END_DELAY_MS = (Number(env.RV_SWAP_ROUND_END_DELAY_SEC) || 5) * 1000;
 const BOOT_LIMIT_MS = (Number(env.RV_SWAP_BOOT_LIMIT_SEC) || 360) * 1000;
 const STATS_SETTLE_MS = 3000, ROUND_END_MAX_MS = 15000;
 const STUCK_MATCH_MS = 30 * 60 * 1000;   // like the supervisor's stuckMatchMin
 const FAULTS_PER_MIN = 300;              // like the supervisor's faultsPerMin, for 3 minutes
 const STUCK = new Set(['match running longer than any match', 'fault flood']);
+const CRASH_BACKOFF_SEC = [10, 30, 60, 120];   // like the supervisor's crashBackoffSec
 const SIDES = ['a', 'b'];
 const other = s => (s === 'a' ? 'b' : 'a');
 
@@ -66,10 +73,8 @@ export function listedModes(value = env.RV_SWAP) {
 }
 
 // ---- the owner's choice ----
-const SUP = join(SERVER, 'Rumbleverse', 'Binaries', 'Win64', 'RVSupervisor');
-export const USER_MODES = join(SUP, 'modes.json');      // the owner's choice of modes
-const MAIN_MODES = join(SUP, 'modes.main.json');        // what the main supervisor runs (without the pairs)
-function modesFile(root) { return join(root, 'server', 'Rumbleverse', 'Binaries', 'Win64', 'RVSupervisor', 'modes.json'); }
+export const USER_MODES = join(SUP_DIR, 'modes.json');      // the owner's choice of modes
+const MAIN_MODES = join(SUP_DIR, 'modes.main.json');        // what the main supervisor runs (without the pairs)
 
 // Modes chosen to run as pairs (when they are switched on). RV_SWAP gives the first value.
 export function swapModes() {
@@ -90,7 +95,6 @@ export function setSwapMode(key, on) {
 function sh(cmd, args, opts = {}) { return execFileSync(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], ...opts }).toString(); }
 // Can this container run pairs? { ok, reason }
 export function pairsAvailable() {
-    if (env.RV_PAIR) return { ok: false, reason: 'this is a server of a pair' };
     try { sh('ip', ['netns', 'list']); } catch { return { ok: false, reason: 'the image has no "ip netns" (update the image)' }; }
     try { sh('nft', ['list', 'tables']); } catch { return { ok: false, reason: 'the container needs the rights for it (AddCapability=NET_ADMIN SYS_ADMIN, see the README)' }; }
     let fwd = '0'; try { fwd = fs.readFileSync('/proc/sys/net/ipv4/ip_forward', 'utf8').trim(); } catch { /* */ }
@@ -116,89 +120,27 @@ function uplink() {
 // ---- one server of a pair ----
 function server(mode, side) {
     const k = MODES.findIndex(m => m.key === mode.key), n = k * 2 + (side === 'b' ? 1 : 0) + 1;
-    const dir = join(SWAP_DIR, `${mode.key}-${side}`);
+    const id = `${mode.id}${side}`, dir = join(SWAP_DIR, `${mode.key}-${side}`);
     return {
-        mode, side, name: `${mode.key}-${side}`, dir, ns: `rv-${mode.key}-${side}`,
+        mode, side, id, name: `${mode.key}-${side}`, dir, wine: join(dir, 'wine'), ns: `rv-${mode.key}-${side}`,
         hostIf: `rvh${k}${side}`, peerIf: `rvp${k}${side}`, hostIp: `10.91.${n}.1`, ip: `10.91.${n}.2`,
-        win64: join(dir, 'server', 'Rumbleverse', 'Binaries', 'Win64'),
-        trace: join(dir, 'server', 'Rumbleverse', 'Binaries', 'Win64', `crash_trace_${mode.id}.log`),
+        trace: join(WIN64, `crash_trace_${id}.log`),
+        status: join(WIN64, `rv_status_${id}.json`),   // Server.dll's own state, where it writes one
     };
 }
 
-// A copy of the main server folder: reflinked where the filesystem can, otherwise the game content
-// (large, never written) hard-linked and everything else copied.
-function copyTree(src, dest, log) {
-    try { sh('cp', ['-a', '--reflink=always', src, dest]); return 'reflink'; } catch { fs.rmSync(dest, { recursive: true, force: true }); }
-    fs.mkdirSync(dest, { recursive: true });
-    for (const e of fs.readdirSync(src)) {
-        const s = join(src, e), d = join(dest, e);
-        if (e === 'Content' && src.endsWith('Rumbleverse')) sh('cp', ['-al', s, d]);
-        else if (e === 'Rumbleverse' && fs.statSync(s).isDirectory()) copyTree(s, d, log);
-        else sh('cp', ['-a', s, d]);
-    }
-    return 'hard links';
-}
-// Server kit updates install into the main server folder; a pair server gets them while it is the waiting
-// one (pairs.mjs stops it, brings its folder up to the main one's files and starts it again). Per-server
-// files (settings, modes, traces, logs) are not touched; a file counts as changed by size and time.
-const OWN_FILES = /^(_updates|Rumbleverse\/Saved)(\/|$)|(^|\/)crash_trace_[^/]*$|\.log$|\/Config\.[a-z]+\.ini$|\/RVSupervisor\/(ds-instances\.json|modes[^/]*\.json)[^/]*$|\.rv-new-\d+$/;
-const kitOf = dir => { try { return fs.readFileSync(join(dir, 'rv-server.version'), 'utf8').trim(); } catch { return ''; } };
-function syncKit(sv) {
-    const dest = join(sv.dir, 'server');
-    let n = 0;
-    const walk = rel => {
-        for (const e of fs.readdirSync(join(SERVER, rel), { withFileTypes: true })) {
-            const r = rel ? `${rel}/${e.name}` : e.name;
-            if (OWN_FILES.test(r) || r === 'rv-server.version') continue;
-            if (e.isDirectory()) { fs.mkdirSync(join(dest, r), { recursive: true }); walk(r); continue; }
-            if (!e.isFile()) continue;
-            const a = fs.statSync(join(SERVER, r));
-            let b = null; try { b = fs.statSync(join(dest, r)); } catch { /* new file */ }
-            if (b && b.size === a.size && Math.trunc(b.mtimeMs) === Math.trunc(a.mtimeMs)) continue;
-            const tmp = join(dest, `${r}.rv-new-${process.pid}`);
-            sh('cp', ['-p', '--reflink=auto', join(SERVER, r), tmp]);
-            fs.renameSync(tmp, join(dest, r));
-            n++;
-        }
-    };
-    walk('');
-    fs.copyFileSync(join(SERVER, 'rv-server.version'), join(dest, 'rv-server.version'));
-    return n;
+// Its own Wine prefix (one Wine server per game server, as one per container before): a copy of the main
+// one, reflinked where the filesystem can. Kept across restarts.
+function preparePrefix(sv, log) {
+    fs.mkdirSync(sv.dir, { recursive: true });
+    if (fs.existsSync(join(sv.wine, 'system.reg'))) return;
+    fs.rmSync(sv.wine, { recursive: true, force: true });
+    sh('cp', ['-a', '--reflink=auto', join(DATA, 'wine'), sv.wine]);
+    log(`[pairs] ${sv.name}: Wine prefix copied`);
 }
 
-function prepareCopy(sv, log) {
-    if (!fs.existsSync(join(sv.win64, GAME_EXE))) {
-        fs.rmSync(sv.dir, { recursive: true, force: true });
-        fs.mkdirSync(sv.dir, { recursive: true });
-        const how = copyTree(SERVER, join(sv.dir, 'server'), log);
-        for (const d of ['wine', 'state', 'addons']) if (fs.existsSync(join(DATA, d))) sh('cp', ['-a', '--reflink=auto', join(DATA, d), join(sv.dir, d)]);
-        fs.rmSync(join(sv.dir, 'state', 'control.sock'), { force: true });
-        const st = join(sv.dir, 'state', 'rv.json'), j = readJson(st, null);
-        if (j) { delete j.pairedModes; delete j.swapModes; writeJson(st, j); }
-        for (const f of fs.readdirSync(sv.win64)) if (/^crash_trace_.*\.log$/.test(f)) fs.rmSync(join(sv.win64, f), { force: true });   // its own history only
-        log(`[pairs] ${sv.name}: server folder copied (${how})`);
-    }
-    // Settings and add-ons follow the main server at every container start.
-    const main = join(SERVER, 'Rumbleverse', 'Binaries', 'Win64');
-    for (const f of [`Config.${sv.mode.key}.ini`]) if (fs.existsSync(join(main, f))) fs.copyFileSync(join(main, f), join(sv.win64, f));
-    if (fs.existsSync(join(DATA, 'addons'))) { fs.rmSync(join(sv.dir, 'addons'), { recursive: true, force: true }); sh('cp', ['-a', join(DATA, 'addons'), join(sv.dir, 'addons')]); }
-    const modes = Object.fromEntries(MODES.map(m => [m.key, m.key === sv.mode.key]));
-    writeJson(modesFile(sv.dir), modes, 0o644);
-    const instFile = join(sv.win64, 'RVSupervisor', 'ds-instances.json'), inst = readJson(instFile, null);
-    if (inst && (inst.matchEndRelaunchSec !== 0 || inst.launchGapSec !== 0 || inst.modesFile !== 'modes.json' || inst.healer !== false)) {
-        inst.matchEndRelaunchSec = 0; inst.launchGapSec = 0;   // only one server per copy: no waits
-        inst.modesFile = 'modes.json';
-        // Its health checks judge a server by the backend's row for its address and port, which both servers
-        // of a pair share, and keep their state across the hours a waiting server is offline (a server that
-        // had just taken over was restarted as "stuck ending the match for 12 min"). This controller checks
-        // the pair servers itself, from each one's own trace.
-        inst.healer = false;
-        writeJson(instFile, inst, 0o644);
-    }
-    fs.mkdirSync(join(sv.dir, 'logs'), { recursive: true });
-}
-
-// Network namespace with a veth link to this one; DNS from the host's real resolvers.
+// Network namespace with a veth link to this one; DNS from the host's real resolvers. Its default route is
+// set by setRoutes: only the active server of a pair has one.
 function nameservers() {
     let list = [];
     try { list = fs.readFileSync('/etc/resolv.conf', 'utf8').split('\n').map(l => /^nameserver\s+(\S+)/.exec(l)?.[1]).filter(Boolean); } catch { /* */ }
@@ -217,15 +159,19 @@ function prepareNet(sv) {
     sh('ip', ['-n', sv.ns, 'addr', 'add', `${sv.ip}/30`, 'dev', 'eth0']);
     sh('ip', ['-n', sv.ns, 'link', 'set', 'lo', 'up']);
     sh('ip', ['-n', sv.ns, 'link', 'set', 'eth0', 'up']);
-    sh('ip', ['-n', sv.ns, 'route', 'add', 'default', 'via', sv.hostIp]);
     fs.mkdirSync(`/etc/netns/${sv.ns}`, { recursive: true });
     fs.writeFileSync(`/etc/netns/${sv.ns}/resolv.conf`, nameservers().map(n => `nameserver ${n}\n`).join(''));
 }
+// The active server has a default route, the waiting one none: its connections fail at once ("network
+// unreachable"), as with no network at all. (Dropped packets made the game's REST library, cpprest, wait for
+// its connections to time out early in the start and then end the process with a fatal error.)
+function setRoutes(p, act) {
+    sh('ip', ['-n', p[act].ns, 'route', 'replace', 'default', 'via', p[act].hostIp]);
+    try { sh('ip', ['-n', p[other(act)].ns, 'route', 'del', 'default']); } catch { /* none */ }
+}
 
 // All pairs' forwarding in one table: outbound NAT for the active servers, the game ports forwarded
-// statelessly to them, the waiting servers cut off. A waiting server's own connections are refused at once
-// (TCP reset, ICMP port unreachable), not dropped: with dropped packets the game's REST library (cpprest,
-// early in the start) waited for its connections to time out and then ended the process with a fatal error.
+// statelessly to them.
 export function rules(pairs, active, addr, dev) {
     const all = pairs.flatMap(p => SIDES.map(s => p[s].ip));
     const lines = [];
@@ -248,7 +194,7 @@ ${lines.map(l => `        ${l.dnat}`).join('\n')}
     }
     chain rv_forward {
         type filter hook forward priority -10; policy accept;
-${lines.map(l => `        ip saddr ${l.off} meta l4proto tcp reject with tcp reset\n        ip saddr ${l.off} reject\n        ip daddr ${l.off} drop`).join('\n')}
+${lines.map(l => `        ip daddr ${l.off} drop`).join('\n')}
         ip saddr { ${all.join(', ')} } accept
         ip daddr { ${all.join(', ')} } ct state established,related accept
     }
@@ -273,15 +219,24 @@ function readRange(f, from, to) {
         finally { fs.closeSync(fd); }
     } catch { return ''; }
 }
-// The game server process of a server: its instance, running in its own folder.
-function gamePid(sv) {
+// Game process of an instance (its -RVInstance= argument, exactly).
+function pidOfInstance(id) {
     for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
         try {
-            if (!fs.readFileSync(`/proc/${pid}/cmdline`, 'latin1').includes(`RVInstance=${sv.mode.id}`)) continue;
-            if (fs.readlinkSync(`/proc/${pid}/cwd`).startsWith(sv.dir + '/')) return Number(pid);
+            const args = fs.readFileSync(`/proc/${pid}/cmdline`, 'latin1').split('\0');
+            if (args.includes(`-RVInstance=${id}`) && args.some(a => a.endsWith(GAME_EXE))) return Number(pid);
         } catch { /* gone */ }
     }
     return 0;
+}
+const gamePid = sv => pidOfInstance(sv.id);
+// Server.dll's status file (rv_status_<instance>.json, rewritten every second) when this server writes one:
+// { flow, joinable, conns, roundOver, statsQueued, statsPosted }. null = none, or stale (> 5 s).
+function liveStatus(sv) {
+    try {
+        if (Date.now() - fs.statSync(sv.status).mtimeMs > 5000) return null;
+        return JSON.parse(fs.readFileSync(sv.status, 'utf8'));
+    } catch { return null; }
 }
 // A process that is going away. Server.dll's "*** CRASH ***" lines are often caught faults the server
 // survives ("[CRASHGUARD] ... skipping"); only "[FATAL]" means it is dying.
@@ -290,7 +245,7 @@ function missingSubLevels(boot) {
     const m = /forced sub-levels settled[^\n]*?(\d+) not loaded/.exec(boot);
     return m ? Number(m[1]) : 0;
 }
-// Process details for the web page / rv status: memory, uptime, connected players (Server.dll's KEEPALIVE).
+// Process details for the web page / rv status: memory, uptime, connected players.
 function details(sv) {
     const pid = gamePid(sv);
     if (!pid) return { running: false };
@@ -302,9 +257,13 @@ function details(sv) {
         const start = Number(fs.readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19]) / 100;
         d.uptimeSec = Math.round(Number(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]) - start);
     } catch { /* gone */ }
-    const s = size(sv.trace), tail = readRange(sv.trace, Math.max(0, s - 200000), s);
-    const m = [...tail.matchAll(/\[KEEPALIVE\][^\n]*conns=(\d+)/g)].pop();
-    d.players = m ? Number(m[1]) : 0;
+    const ls = liveStatus(sv);
+    if (ls && Number.isInteger(ls.conns)) d.players = ls.conns;
+    else {
+        const s = size(sv.trace), tail = readRange(sv.trace, Math.max(0, s - 200000), s);
+        const m = [...tail.matchAll(/\[KEEPALIVE\][^\n]*conns=(\d+)/g)].pop();
+        d.players = m ? Number(m[1]) : 0;
+    }
     return d;
 }
 // CPU priority: the waiting server of a pair runs at the lowest priority (nice 19), so that its starts never
@@ -350,7 +309,8 @@ function createWatch(sv, log) {
         ready() {
             if (!gamePid(sv)) return false;
             const b = w.currentBoot();
-            return b.includes('reporting joinable') && !ENDED.test(b) && !missingSubLevels(b);
+            const joinable = liveStatus(sv)?.joinable ?? b.includes('reporting joinable');
+            return !!joinable && b.length > 0 && !ENDED.test(b) && !missingSubLevels(b);
         },
         kill(why) {
             const pid = gamePid(sv);
@@ -390,40 +350,50 @@ function createWatch(sv, log) {
     return w;
 }
 
-// ---- running the pairs ----
+// ---- running a game server ----
+// The mode's instance from the main supervisor's ds-instances.json: arguments, port, game mode, config.
+function instanceArgs(sv) {
+    const cfg = readJson(INSTANCES, {}) || {};
+    const d = (cfg.instances || []).find(x => x.id === sv.mode.id) || { port: sv.mode.port, gameMode: MODES.findIndex(m => m.key === sv.mode.key), config: `Config.${sv.mode.key}.ini` };
+    // Like the supervisor's argsFor(), with this server's own instance id (its log files).
+    return [...(d.args || cfg.args || ['-log', '-nullrhi', '-nosound']), `-LOG=server-${sv.id}.log`, `-RVInstance=${sv.id}`,
+        `-RVPort=${d.port}`, `-RVGameMode=${d.gameMode}`, ...(d.config ? [`-RVConfig=${d.config}`] : [])];
+}
+const kitVersion = () => { try { return fs.readFileSync(join(SERVER, 'rv-server.version'), 'utf8').trim(); } catch { return ''; } };
+
+// Starts the game process of one pair server in its namespace and starts it again whenever it ends: at once
+// after a clean exit (a match end), after a crash with the supervisor's back-off. Returns
+// { stop(), kit (the server kit version of the running process) }.
 function runServer(sv, log, delayMs) {
-    const proc = { child: null, stopping: false, timer: null };
+    const proc = { child: null, stopping: false, timer: null, crashes: 0, kit: '' };
     const start = () => {
         if (proc.stopping) return;
-        const cmd = ['ip', 'netns', 'exec', sv.ns, process.execPath, RV, 'run'];
-        const child = spawn(PRLIMIT || cmd[0], PRLIMIT ? ['--nice=20:20', ...cmd] : cmd.slice(1), {
-            env: { ...env, RV_DATA: sv.dir, WINEPREFIX: join(sv.dir, 'wine'), RV_WEBUI: 'off', RV_SWAP: '', RV_PAIR: sv.name },
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        proc.child = child;
-        const pipe = stream => {
-            let buf = '';
-            stream.on('data', d => {
-                buf += d; let k;
-                while ((k = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, k); buf = buf.slice(k + 1); if (line) console.log(`[${sv.name}] ${line}`); }
-            });
-        };
-        pipe(child.stdout); pipe(child.stderr);
+        // the same preparations the main supervisor's game servers get (linux-shim.mjs)
+        applySlim(EXE); applyBots(EXE); applyAddons(EXE);
+        const cmd = ['ip', 'netns', 'exec', sv.ns, ...(PRLIMIT ? [PRLIMIT, '--nice=20:20'] : []), ...(KSM ? ['rv-ksm'] : []), 'wine', EXE, ...instanceArgs(sv)];
+        proc.kit = kitVersion();
+        const child = spawn(cmd[0], cmd.slice(1), { cwd: WIN64, stdio: 'ignore', env: { ...env, WINEPREFIX: sv.wine } });
+        proc.child = child; proc.startedAt = Date.now();
+        log(`[pairs] ${sv.name}: starting (${sv.id}, kit ${proc.kit || 'unknown'})`);
+        child.on('error', e => log(`[pairs] ${sv.name}: could not start: ${e.message}`));
         child.on('exit', (code, sig) => {
             proc.child = null;
             if (proc.stopping) return;
-            log(`[pairs] ${sv.name}: exited (${code ?? sig}) - starting again in 10s`);
-            proc.timer = setTimeout(start, 10000);
+            if (Date.now() - proc.startedAt > 5 * 60 * 1000) proc.crashes = 0;   // it ran a while: a fresh count
+            const delay = code === 0 ? 0 : CRASH_BACKOFF_SEC[Math.min(proc.crashes++, CRASH_BACKOFF_SEC.length - 1)];
+            log(`[pairs] ${sv.name}: ${code === 0 ? 'exited (match end)' : `ended (${code ?? sig})`} - starting again${delay ? ` in ${delay}s` : ''}`);
+            proc.timer = setTimeout(start, delay * 1000);
         });
     };
     proc.timer = setTimeout(start, delayMs);
+    // Stopping a pair server ends its game process (as the supervisor's stop does).
     proc.stop = () => new Promise(res => {
         proc.stopping = true; clearTimeout(proc.timer);
-        const c = proc.child;
+        const c = proc.child, pid = gamePid(sv);
+        if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
         if (!c) return res();
-        const t = setTimeout(() => { try { c.kill('SIGKILL'); } catch { /* */ } res(); }, 60000);
+        const t = setTimeout(res, 10000);
         c.once('exit', () => { clearTimeout(t); res(); });
-        c.kill('SIGTERM');
     });
     return proc;
 }
@@ -431,7 +401,7 @@ function runServer(sv, log, delayMs) {
 // The main supervisor reads modes.main.json where pairs can run. Called before it starts. Earlier versions
 // switched paired modes off in modes.json itself; those are switched on again there (the owner's choice).
 export function prepareModes(log) {
-    const inst = readJson(join(SUP, 'ds-instances.json'), null), user = readJson(USER_MODES, null);
+    const inst = readJson(INSTANCES, null), user = readJson(USER_MODES, null);
     if (!inst || !user) return false;
     const st = readState();
     if (!st.modesSplit) {
@@ -442,31 +412,20 @@ export function prepareModes(log) {
     if (!fs.existsSync(MAIN_MODES)) writeJson(MAIN_MODES, Object.fromEntries(MODES.map(m => [m.key, !!user[m.key] && !swapModes().includes(m.key)])), 0o644);
     if (inst.modesFile !== 'modes.main.json') {
         inst.modesFile = 'modes.main.json';
-        writeJson(join(SUP, 'ds-instances.json'), inst, 0o644);
+        writeJson(INSTANCES, inst, 0o644);
         log('[pairs] the main supervisor now reads modes.main.json (modes.json without the server pairs)');
     }
     return true;
 }
 // Where pairs cannot run: the main supervisor reads the owner's modes.json again.
 export function releaseModes(log) {
-    const inst = readJson(join(SUP, 'ds-instances.json'), null);
+    const inst = readJson(INSTANCES, null);
     if (inst && inst.modesFile === 'modes.main.json') {
         inst.modesFile = 'modes.json';
-        writeJson(join(SUP, 'ds-instances.json'), inst, 0o644);
+        writeJson(INSTANCES, inst, 0o644);
         log('[pairs] pairs cannot run here - the main supervisor reads modes.json');
     }
     updateState({ pairedModes: [] });
-}
-
-// The main supervisor's own game server of a mode (Wine process of that instance in the main folder).
-function mainRuns(mode) {
-    for (const pid of fs.readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
-        try {
-            if (!fs.readFileSync(`/proc/${pid}/cmdline`, 'latin1').includes(`RVInstance=${mode.id}`)) continue;
-            if (fs.readlinkSync(`/proc/${pid}/cwd`).startsWith(SERVER + '/')) return true;
-        } catch { /* gone */ }
-    }
-    return false;
 }
 
 // Runs the pairs the owner chose and keeps them in line with modes.json and the "Pair" setting.
@@ -476,10 +435,11 @@ export function createPairs({ log = console.log } = {}) {
     fs.mkdirSync(SWAP_DIR, { recursive: true });
     const active = readJson(STATE, {});
     const running = new Map();   // mode key -> { p, procs, ctl }
-    let stopped = false, tick = 0, waitingLogged = new Set(), syncBusy = false;   // one kit update at a time
+    let stopped = false, tick = 0, waitingLogged = new Set();
 
     const apply = () => {
         const pairs = [...running.values()].map(r => r.p);
+        for (const p of pairs) setRoutes(p, active[p.mode.key]);
         if (pairs.length) execFileSync('nft', ['-f', '-'], { input: rules(pairs, active, addr, dev) });
         else { try { execFileSync('nft', ['delete', 'table', 'ip', 'rvpairs'], { stdio: 'ignore' }); } catch { /* none */ } }
         writeJson(STATE, active, 0o644);
@@ -487,13 +447,7 @@ export function createPairs({ log = console.log } = {}) {
     };
     const startPair = mode => {
         const p = { mode, a: server(mode, 'a'), b: server(mode, 'b') };
-        for (const sd of SIDES) {
-            prepareCopy(p[sd], log);
-            // nothing of the pair runs yet: both servers start on the main server's kit
-            const from = kitOf(join(p[sd].dir, 'server')), to = kitOf(SERVER);
-            if (to && from !== to) log(`[pairs] ${p[sd].name}: server kit ${from || 'unknown'} -> ${to} (${syncKit(p[sd])} file(s))`);
-            prepareNet(p[sd]);
-        }
+        for (const sd of SIDES) { preparePrefix(p[sd], log); prepareNet(p[sd]); }
         if (!active[mode.key]) active[mode.key] = 'a';
         const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, goneSince: 0, wasUp: false };
         running.set(mode.key, { p, ctl, procs: {} });
@@ -530,7 +484,7 @@ export function createPairs({ log = console.log } = {}) {
             if (MODES.some(m => !!cur[m.key] !== mainWant[m.key])) writeJson(MAIN_MODES, mainWant, 0o644);
             for (const m of want) {
                 if (running.has(m.key)) continue;
-                if (mainRuns(m)) {   // closes after its current match (switched off in modes.main.json)
+                if (pidOfInstance(m.id)) {   // the main supervisor's server: closes after its current match (off in modes.main.json)
                     if (!waitingLogged.has(m.key)) { waitingLogged.add(m.key); log(`[pairs] ${m.label}: becomes a pair once its current server has finished its match`); }
                     continue;
                 }
@@ -541,32 +495,15 @@ export function createPairs({ log = console.log } = {}) {
         } finally { busy = false; }
     };
 
-    // Settings written into the main server's Config.<mode>.ini only (a backend "settings" command) reach
-    // both servers of the pair; each uses them from its next start.
-    const followSettings = p => {
-        const f = `Config.${p.mode.key}.ini`, main = join(SERVER, 'Rumbleverse', 'Binaries', 'Win64', f);
-        let m; try { m = fs.statSync(main).mtimeMs; } catch { return; }
-        for (const sd of SIDES) {
-            const dst = join(p[sd].win64, f);
-            let d = 0; try { d = fs.statSync(dst).mtimeMs; } catch { /* */ }
-            if (m > d) { const tmp = `${dst}.rv-new-${process.pid}`; fs.copyFileSync(main, tmp); fs.renameSync(tmp, dst); }
-        }
-    };
-    // A kit update for the waiting server: stop it, bring its folder up to date, start it again.
-    const updateWaiting = (c, sd) => {
-        const r = running.get(c.p.mode.key), sv = c.p[sd];
-        if (!r?.procs[sd]) return;
-        syncBusy = true;
-        (async () => {
-            const from = kitOf(join(sv.dir, 'server')) || 'unknown', to = kitOf(SERVER);
-            await r.procs[sd].stop();
-            try {
-                const n = syncKit(sv);
-                prepareCopy(sv, log);
-                log(`[pairs] ${sv.name}: server kit ${from} -> ${to} (${n} file(s)) while it was the waiting server`);
-            } catch (e) { log(`[pairs] ${sv.name}: server kit update failed (${e.message}) - it keeps ${from}`); }
-            if (running.get(c.p.mode.key) === r) r.procs[sd] = runServer(sv, log, 0);
-        })().catch(e => log(`[pairs] ${e.message}`)).finally(() => { syncBusy = false; });
+    // A server kit update: the waiting server is restarted so it starts on the new files (one at a time on
+    // the box, and only once it is up - a start in progress already loads them). The active one takes the
+    // new files at its next start, after its match.
+    let kitRestartAt = 0;
+    const followKit = (c, sb) => {
+        const kit = kitVersion(), proc = running.get(c.p.mode.key)?.procs[sb];
+        if (!kit || !proc?.child || !proc.kit || proc.kit === kit || Date.now() - kitRestartAt < 120000 || !c.w[sb].ready()) return;
+        kitRestartAt = Date.now();
+        c.w[sb].kill(`server kit ${proc.kit} -> ${kit} (it is the waiting server)`);
     };
 
     const describe = (w, isActive) => w.ready() ? (isActive ? 'up' : 'in its lobby') : gamePid(w.sv) ? (isActive && w.currentBoot().includes('reporting joinable') ? 'up' : 'starting') : 'not running';
@@ -596,17 +533,27 @@ export function createPairs({ log = console.log } = {}) {
                     if (!c.waiting && /terminating for restart/.test(text)) c.waiting = 'match over';
                     else if (!c.waiting && /\[FATAL\]|boot attempts exhausted/.test(text)) c.waiting = 'crashed';
                     else if (!c.waiting && c.wasUp && /DllMain: begin/.test(text)) c.waiting = 'restarted';
-                    // the active server's own match state (the supervisors' health checks are off in pairs)
                     for (const m of text.matchAll(/\[FLOW\] game flow -?\d+ -> (-?\d+)/g)) { c.flow = Number(m[1]); c.flowSince = Date.now(); }
                     c.faults = (c.faults || 0) + (text.match(/\[CRASHGUARD\]/g) || []).length;
                     if (/\[STATS\] .* sent to the backend/.test(text)) c.statsAt = Date.now();
+                    if (/\[STATS\] match reports posted/.test(text)) c.postedAt = Date.now();
+                }
+                // Server.dll's status file, where it writes one: the same events, without reading the trace.
+                const ls = liveStatus(c.p[act]);
+                if (ls) {
+                    if (Number.isInteger(ls.flow) && ls.flow !== c.flow) { c.flow = ls.flow; c.flowSince = Date.now(); }
+                    if (!c.waiting && ls.roundOver && !c.roundOverAt) c.roundOverAt = Date.now();
+                    if (ls.statsPosted > (c.statsPosted ?? ls.statsPosted)) c.postedAt = Date.now();
+                    c.statsPosted = ls.statsPosted;
                 }
                 if (!c.wasUp && A.ready()) c.wasUp = true;
                 // Round over: Server.dll sends every remaining player's match report (Game Records) then. The
-                // swap cuts the old server off, so it waits until no report has been queued for STATS_SETTLE_MS
-                // (each one is posted right after its line), at most ROUND_END_MAX_MS after the round.
+                // swap cuts the old server off, so it waits until the reports were posted ("[STATS] match reports
+                // posted", where Server.dll logs it) or, without that, until no report has been queued for
+                // STATS_SETTLE_MS - at most ROUND_END_MAX_MS after the round.
                 if (!c.waiting && c.roundOverAt) {
-                    const since = Date.now() - c.roundOverAt, settled = !c.statsAt || Date.now() - c.statsAt >= STATS_SETTLE_MS;
+                    const since = Date.now() - c.roundOverAt;
+                    const settled = c.postedAt > c.roundOverAt || (!c.postedAt && (!c.statsAt || Date.now() - c.statsAt >= STATS_SETTLE_MS));
                     if (since >= ROUND_END_MAX_MS || (since >= ROUND_END_DELAY_MS && settled)) c.waiting = 'round over';
                 }
                 if (!c.waiting && c.wasUp) {
@@ -620,8 +567,8 @@ export function createPairs({ log = console.log } = {}) {
                     c.faults = 0;
                     if (!c.waiting && c.floodMin >= 3) c.waiting = 'fault flood';
                 }
-                if (tick % 5 === 0) { B.checkHealth(); if (!c.waiting) A.checkHealth(); followSettings(c.p); setNice(gamePid(c.p[act]), 0); if (PRLIMIT) setNice(gamePid(c.p[sb]), 19); }
-                if (tick % 30 === 0 && !syncBusy && kitOf(SERVER) && kitOf(SERVER) !== kitOf(join(c.p[sb].dir, 'server'))) updateWaiting(c, sb);
+                if (tick % 5 === 0) { B.checkHealth(); if (!c.waiting) A.checkHealth(); setNice(gamePid(c.p[act]), 0); if (PRLIMIT) setNice(gamePid(c.p[sb]), 19); }
+                if (tick % 30 === 0) followKit(c, sb);
                 if (!c.waiting) continue;
                 if (B.ready()) {
                     setNice(gamePid(c.p[sb]), 0);
@@ -631,7 +578,7 @@ export function createPairs({ log = console.log } = {}) {
                     A.forget();
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - swapped: ${sb} is active, ${act} restarts and waits`);
                     if (STUCK.has(c.waiting)) A.kill(c.waiting);
-                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1; c.flow = null; c.faults = 0; c.floodMin = 0; c.statsAt = 0;
+                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1; c.flow = null; c.faults = 0; c.floodMin = 0; c.statsAt = 0; c.postedAt = 0; c.statsPosted = undefined;
                 } else if (c.waiting === 'map incomplete') {
                     A.checkHealth(); c.waiting = ''; c.roundOverAt = 0;
                 } else if (STUCK.has(c.waiting)) {

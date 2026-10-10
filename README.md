@@ -164,6 +164,9 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_WEBUI_BIND` | address of the web page (default `0.0.0.0`; `127.0.0.1` = only through an SSH tunnel) |
 | `RV_KIT_AUTO_UPDATE` | `off` = do not install new server kits by itself (default `on`; see Updates below) |
 | `RV_KIT_UPDATE_HOURS` | hours between server kit checks (default `0.25`, every 15 minutes) |
+| `RV_IMAGE_AUTO_UPDATE` | `off` = do not check for a newer container image (default on) |
+| `RV_IMAGE_UPDATE_HOURS` | hours between image checks (default `1`) |
+| `RV_IMAGE_UPDATE_MAX_HOURS` | restart for a new image after this many hours even with players on (default `6`) |
 | `RV_NODE_ID`, `RV_NODE_KEY` | move an existing registration to this machine |
 
 ### As a Podman Quadlet (starts at boot, updates itself)
@@ -182,7 +185,7 @@ Image=ghcr.io/cmspam/rvclient-community-servers:latest
 Network=host
 Volume=/root/Rumbleverse-client-z.zip:/game.zip:ro,z
 Volume=/srv/rvserver:/data:Z
-AutoUpdate=registry
+Pull=newer
 # ntsync, if the kernel has it (see "Faster thread synchronization"):
 #AddDevice=/dev/ntsync
 # Memory sharing between modes (also switch KSM on, see "Saving memory"):
@@ -206,7 +209,6 @@ Then:
 sudo mkdir -p /srv/rvserver
 sudo systemctl daemon-reload
 sudo systemctl start rvserver
-sudo systemctl enable --now podman-auto-update.timer     # automatic image updates
 sudo journalctl -u rvserver | grep -A2 "admin password"  # the admin password
 ```
 
@@ -281,10 +283,17 @@ Each mode restarts on the new kit only once it is empty (after 3 hours regardles
 rolls back by itself if a mode crashes twice in the first 10 minutes; the next check then tries the
 newest kit again. Files are replaced so that a running mode keeps the old ones until it restarts
 (Linux does not lock a loaded DLL the way Windows does, so overwriting it in place would freeze a
-running match). `RV_KIT_AUTO_UPDATE=off` turns this off. The
-container image (Wine and the tools around it) updates itself with the Quadlet above; otherwise run
-`sudo podman pull ghcr.io/cmspam/rvclient-community-servers:latest` and re-create the container
-(or run the installer again). Your data stays in the data folder.
+running match). `RV_KIT_AUTO_UPDATE=off` turns this off.
+
+The container image (Wine and the tools around it) updates itself too, without cutting a match off: about
+once an hour (`RV_IMAGE_UPDATE_HOURS`) the container asks the registry whether its tag points to a newer
+build, and when it does, it waits until every server is empty (after 6 hours regardless,
+`RV_IMAGE_UPDATE_MAX_HOURS`) and stops; the service starts it again and, with `Pull=newer` in the Quadlet
+above, on the new image. Do not use `AutoUpdate=registry` / `podman-auto-update.timer` for this container:
+it restarts the container as soon as a new image appears, in the middle of a match. With Docker, or without
+`Pull=newer`, the container logs that it was not updated and does not try again for that build; then run
+`sudo podman pull ghcr.io/cmspam/rvclient-community-servers:latest` and re-create the container (or run the
+installer again). `RV_IMAGE_AUTO_UPDATE=off` turns the check off. Your data stays in the data folder.
 
 Data folder contents: `server/` (game and server kit), `state/` (registration and web login; keep it private),
 `logs/`, `wine/`. To move the server to another machine, stop it and copy the whole folder.
@@ -457,12 +466,13 @@ host's setting (the installer switches it on for pairs; a host with only host-ne
 it off). The container can also use its own network (a Podman or Docker network, or another container's
 network such as a VPN tunnel): the game ports must then reach the container's address, and forwarding is
 set for that network (Quadlet `Sysctl=net.ipv4.ip_forward=1`, Docker `--sysctl net.ipv4.ip_forward=1`; for
-a network shared with another container, on that container). Each
-server of a pair gets its own network namespace and its own copy of the server folder under
-`data/swap/<mode>-a` and `-b` (on a filesystem with reflink copies, such as XFS or Btrfs, the copy takes
-no extra space; otherwise the game content is shared through hard links). Settings changed with `rv set` or the web
-page reach both servers of a pair; each uses them from its next start (after its next match). Add-ons
-are copied from the main server folder at every container start. If the pairs cannot run (for example without the capabilities above), the modes run as single
+a network shared with another container, on that container). The container
+starts both servers of a pair itself, from the same server folder as every other mode, each in its own
+network namespace. They share the game files and the mode's `Config.<mode>.ini`; each has its own instance
+id (`solo-01a`, `solo-01b`: its own log files next to the game) and its own Wine prefix under
+`data/swap/<mode>-a` and `-b`. Settings changed with `rv set` or the web page apply to both servers of a
+pair from their next start (after their next match). The waiting server has no route out: anything it
+tries to reach fails at once, as with no network. If the pairs cannot run (for example without the capabilities above), the modes run as single
 servers, the log says why, and the Pair switch on the web page is greyed out with the reason. The
 installer adds the capabilities when pairs are chosen during installation.
 
@@ -474,13 +484,14 @@ whether the other one is waiting in its lobby; `rv swap restart <mode>` restarts
 Only the main server speaks to the backend for the box. The servers of a pair never register, poll or
 report on their own; the main one reports a paired mode as running, with its active server's players,
 and carries out the backend's commands for it: a restart restarts the active server, and switching the mode
-off or on goes into `modes.json`. Server kit updates install into the main server folder; each server of
-a pair gets the new files while it is the waiting one (it is stopped, brought up to date and started
-again), so a pair moves to a new kit within a match or two, without stopping a match. Only one waiting server is
-updated at a time.
+off or on goes into `modes.json`. Server kit updates install into the server folder as usual; a running
+server keeps the files it has open. The waiting server of a pair is restarted to start on the new kit (one
+at a time on the box), and the active one takes it at its next start, after its match - so a pair moves to
+a new kit within a match, without stopping one.
 
-The container watches every server of a pair from its own log, not from the backend (both servers of a pair
-share one address and port, so the backend's view never belongs to one of them):
+The container watches every server of a pair from its own state - Server.dll's status file where it writes
+one, otherwise its log - not from the backend (both servers of a pair share one address and port, so the
+backend's view never belongs to one of them):
 
 - a start that came up with parts of the map missing, froze, stalled, or took longer than
   `RV_SWAP_BOOT_LIMIT_SEC` (default 360) is restarted;

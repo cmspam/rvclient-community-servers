@@ -2,7 +2,7 @@ name: Linux container image
 
 on:
   push:
-    branches: [main]
+    branches: [main, next]
     paths: ['linux/**', '.github/workflows/linux-image.yml']
   schedule:
     - cron: '17 3 * * 1'   # weekly: picks up new Alpine and Wine packages
@@ -26,13 +26,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: name
-        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          # main -> :latest; another branch (next) -> a tag of its own name, for testing
+          if [ "$GITHUB_REF_NAME" = main ]; then echo "tag=latest" >> "$GITHUB_OUTPUT"; else echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"; fi
       - uses: docker/build-push-action@v6
         with:
           context: linux
           file: linux/Containerfile
           push: true
           tags: |
-            ${{ steps.name.outputs.image }}:latest
+            ${{ steps.name.outputs.image }}:${{ steps.name.outputs.tag }}
             ${{ steps.name.outputs.image }}:${{ github.sha }}
+          build-args: |
+            RV_IMAGE_REF=${{ steps.name.outputs.image }}:${{ steps.name.outputs.tag }}
+            RV_REVISION=${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}

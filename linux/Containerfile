@@ -14,9 +14,7 @@ RUN gcc -O2 -static -s -o /src/rv-ksm /src/rv-ksm.c \
 
 FROM public.ecr.aws/docker/library/alpine:latest
 
-# Podman's auto-update (podman-auto-update.timer) pulls newer images of this tag by itself.
-LABEL io.containers.autoupdate=registry \
-      org.opencontainers.image.title="Rumbleverse server (Linux/Wine)" \
+LABEL org.opencontainers.image.title="Rumbleverse server (Linux/Wine)" \
       org.opencontainers.image.description="Rumbleverse community/private server under Wine, with a web admin UI"
 
 RUN apk add --no-cache wine nodejs libarchive-tools tini ca-certificates tzdata nftables iproute2 util-linux-misc \
@@ -28,6 +26,13 @@ COPY --from=build /src/rvslim.dll /opt/rv/lib/rvslim.dll
 COPY --from=build /src/rvbots.dll /opt/rv/lib/rvbots.dll
 RUN chmod 0755 /opt/rv/bin/tar /opt/rv/rv.mjs \
  && ln -s /opt/rv/rv.mjs /usr/local/bin/rv
+
+# The build this image is: its registry tag and git revision. The container updates itself to a newer build
+# of the same tag only while nobody is playing (image-update.mjs).
+ARG RV_IMAGE_REF=""
+ARG RV_REVISION=""
+LABEL org.opencontainers.image.revision="${RV_REVISION}"
+RUN printf 'ref=%s\nrevision=%s\n' "$RV_IMAGE_REF" "$RV_REVISION" > /opt/rv/IMAGE
 
 ENV RV_DATA=/data \
     WINEPREFIX=/data/wine \

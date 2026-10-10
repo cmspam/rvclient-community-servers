@@ -91,8 +91,10 @@ export function setIniValues(file, section, values) {
 }
 
 // ---- game server processes (Wine children of the supervisor) ----
-// Matched by the -RVInstance= argument the supervisor passes, like Stop-AllModes.bat does, and by their
-// folder: with server pairs (RV_SWAP) several servers run in this container, each in its own data folder.
+// Matched by the -RVInstance= argument the supervisor passes, like Stop-AllModes.bat does. The servers of a
+// server pair (pairs.mjs) run from the same folder with their own instance ids (solo-01a / solo-01b) and
+// belong to the pair controller, not to the supervisor.
+export const isPairInstance = id => /\d[ab]$/.test(String(id || ''));
 export function gameProcesses() {
     const out = [];
     for (const pid of readdirSync('/proc').filter(p => /^\d+$/.test(p))) {
@@ -100,7 +102,7 @@ export function gameProcesses() {
             const cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0');
             if (!cmd.some(a => /RumbleverseClient-Win64-Shipping\.exe$/i.test(a))) continue;
             const inst = (cmd.find(a => a.startsWith('-RVInstance=')) || '').slice(12);
-            if (!inst) continue;
+            if (!inst || isPairInstance(inst)) continue;
             if (!readlinkSync(`/proc/${pid}/cwd`).startsWith(SERVER + '/')) continue;
             const status = readFileSync(`/proc/${pid}/status`, 'utf8');
             const rssKb = Number((status.match(/^VmRSS:\s+(\d+)/m) || [])[1] || 0);
