@@ -29,7 +29,7 @@ Host your own Rumbleverse server with rVclient, on **Windows** or **Linux**.
 - RAM: about 3.5 to 4 GB for each mode you run (Playground alone is the lightest)
 - Disk: about 15 GB if setup copies your game files, about 1 GB if it links them
 - Private server: Tailscale or Radmin VPN on your PC and your friends' PCs, same network
-- Community server: a VPS or dedicated server, with **UDP 7777-7781** open in your provider's firewall
+- Community server: a VPS or dedicated server, with **UDP 7777-7781** open in your provider's firewall (and 7877-7881 for Zero Wait)
 
 ### Steps
 
@@ -66,7 +66,7 @@ software inside it is the official one and updates itself exactly as on Windows.
 - **Podman** or **Docker** (see step 1)
 - RAM: about 3 GB for one mode, about 2.5 GB for each further mode (1.8 GB with memory sharing)
 - Disk: about 25 GB free
-- A public IPv4 address; **UDP 7777-7781** reachable (also in your provider's firewall, if it has one)
+- A public IPv4 address; **UDP 7777-7781** reachable, and 7877-7881 for Zero Wait (also in your provider's firewall, if it has one)
 - Your Rumbleverse game zip (about 11 GB)
 
 ### Easiest way: from your own computer, onto a fresh VPS
@@ -113,7 +113,7 @@ It asks:
 5. your **public IP** (detected for you, press Enter)
 6. which **modes** to run (it suggests how many fit in your RAM)
 7. which modes get **Zero Wait**, no waiting between matches (see
-   [Zero Wait](#zero-wait-no-waiting-between-matches-linux); about 2.5 GB more RAM per mode; it suggests
+   [Zero Wait](#zero-wait-no-waiting-between-matches-linux); about 2.5 GB more RAM per mode and its port + 100 open to players; it suggests
    the modes that fit, empty for none, and it can be switched per mode later on the web page)
 8. whether to switch on **memory sharing** (recommended with more than one mode)
 9. whether to turn on the **web admin page**
@@ -168,6 +168,7 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_IMAGE_UPDATE_MAX_HOURS` | restart for a new image after this many hours even with players on (default `6`) |
 | `RV_SWAP` | modes with Zero Wait at the first start, e.g. `solo,duos` (see [Zero Wait](#zero-wait-no-waiting-between-matches-linux)) |
 | `RV_BOOT_NICE` | `off` = game servers start at the normal CPU priority (default: lowest until joinable) |
+| `RV_WARM_SPARE_MIN_FREE_MB` | free memory a Zero Wait spare needs to start (default 2500) |
 | `RV_NODE_ID`, `RV_NODE_KEY` | move an existing registration to this machine |
 
 ### As a Podman Quadlet (starts at boot, updates itself)
@@ -391,74 +392,41 @@ Without ntsync the server works the same way, using Wine's older method.
 ## Zero Wait: no waiting between matches (Linux)
 
 A server needs a minute or more to start its next match. With Zero Wait, players queue straight into
-the next match instead. With enough memory, a mode runs as a pair of servers that take turns: while one runs a match, the other has already started and waits in its
-lobby, with no network at all. A few seconds after the round is over (once the players have their
-results and the server has sent the match reports for Game Records, at most 15 seconds), they swap: the waiting server gets the mode's game port and its connection, and the next
-match starts at once. The other one restarts and becomes the one waiting. Both use the same public
-address, game port and server identity, so to the backend the mode is still one server; the waiting one
-never talks to it. If the waiting server is not ready when a match ends, nothing swaps and the server
-restarts as usual.
+the next match instead: a second server of the mode is already started and waiting in its lobby.
 
-Switch it on per mode with the **Zero Wait** switch on the web admin page, or `rv swap on <mode>` (`rv swap off
-<mode>` to go back). A mode that becomes a pair finishes its current match first; a pair that is switched off
-stops at once and the mode runs as a single server again. `RV_SWAP` (for example `RV_SWAP=solo,duos`, or
-`all`) sets the first choice when the server starts for the first time. Each chosen mode that is switched on
-runs as a pair, inside the same container; the other modes run as usual. A pair needs memory
-for two servers of that mode (2 to 3 GB each). In the container's settings (Quadlet):
+**Server kit 2026.10.10.2 and newer** have this built in as the **warm spare**, and the container uses it
+as it is. Each battle royale mode with Zero Wait gets a second server, `<mode>-spare`, on the mode's port
++ 100 (Solos 7877, Duos 7879, Trios 7880, Squads 7881), with the same `Config.<mode>.ini`. Both are
+ordinary game servers: each reports to the backend with its own port, and matchmaking sends players to
+whichever one is in its lobby. While one plays a match or restarts after it, the other takes the next
+players. Nothing is switched at the network level. Playground has no matches, so it has no spare.
 
-```ini
-Network=host
-AddCapability=NET_ADMIN SYS_ADMIN SYS_RESOURCE
-SecurityLabelDisable=true
-Environment=RV_SWAP=solo,duos
-```
+- The spare's port must be open to players like the mode's own port (provider firewall, port forward).
+  The installer opens 7877-7881/udp in firewalld or ufw.
+- A spare only starts with 2.5 GB of free memory (`RV_WARM_SPARE_MIN_FREE_MB` changes this). Once
+  started, it restarts after its matches like any server.
+- Switch it per mode with the **Zero Wait** switch on the web admin page, `rv swap on <mode>` /
+  `rv swap off <mode>`, or the **Warm spare server** setting. They all set `WarmSpare=true` or `false` in
+  `Config.<mode>.ini`. Off: the spare closes after its current match.
+- When a container first starts on such a kit, the modes that had Zero Wait before (or are listed in
+  `RV_SWAP`) keep it, and the other battle royale modes get `WarmSpare=false`.
+- `rv swap status` and the web page show each mode's server and its spare (port, state, players).
+  `rv logs <mode>-spare` shows the spare's log.
 
-With Docker: `--network host --cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --security-opt apparmor=unconfined`.
-With `SYS_RESOURCE`, the waiting server of a pair runs at the lowest CPU priority, so that its starts never
-slow down a match on the box; the active one runs at the normal priority. Without it, both run at the normal
-priority.
-The container's network needs IP forwarding on (`net.ipv4.ip_forward=1`). With `Network=host` that is the
-host's setting (the installer switches it on; a host with only host-network containers may have
-it off). The container can also use its own network (a Podman or Docker network, or another container's
-network such as a VPN tunnel): the game ports must then reach the container's address, and forwarding is
-set for that network (Quadlet `Sysctl=net.ipv4.ip_forward=1`, Docker `--sysctl net.ipv4.ip_forward=1`; for
-a network shared with another container, on that container). The container
-starts both servers of a pair itself, from the same server folder as every other mode, each in its own
-network namespace. They share the game files and the mode's `Config.<mode>.ini`; each has its own instance
-id (`solo-01a`, `solo-01b`: its own log files next to the game) and its own Wine prefix under
-`data/swap/<mode>-a` and `-b`. Settings changed with `rv set` or the web page apply to both servers of a
-pair from their next start (after their next match). The waiting server has no route out: anything it
-tries to reach fails at once, as with no network. If the pairs cannot run (for example without the capabilities above), the modes run as single
-servers, the log says why, and the Zero Wait switch on the web page is greyed out with the reason. The
-installer (run as root) always adds the capabilities and switches IP forwarding on, so Zero Wait can be
-switched on per mode at any time.
+Every game server, spare or not, starts at the lowest CPU priority (nice 19) and gets the normal
+priority once it is joinable, so that a server starting next to a match does not slow the match down.
+This needs the `SYS_RESOURCE` capability (the installer always adds it); `RV_BOOT_NICE=off` turns it off.
 
-The web admin page and `rv status` show a paired mode with its active server (and which one is waiting);
-its Restart button restarts the active server (the waiting one takes over), and its On switch starts or
-stops the pair. `podman exec <container> rv swap status` shows, for each mode, which server is active and
-whether the other one is waiting in its lobby; `rv swap restart <mode>` restarts the active one.
+When a running container's server kit updates itself to one with the warm spare, the container restarts
+once nobody is playing (or after `RV_IMAGE_UPDATE_MAX_HOURS`) and comes back with warm spares.
 
-Only the main server speaks to the backend for the box. The servers of a pair never register, poll or
-report on their own; the main one reports a paired mode as running, with its active server's players,
-and carries out the backend's commands for it: a restart restarts the active server, and switching the mode
-off or on goes into `modes.json`. Server kit updates install into the server folder as usual; a running
-server keeps the files it has open. The waiting server of a pair is restarted to start on the new kit (one
-at a time on the box), and the active one takes it at its next start, after its match - so a pair moves to
-a new kit within a match, without stopping one.
-
-The container watches every server of a pair from its own state - Server.dll's status file where it writes
-one, otherwise its log - not from the backend (both servers of a pair share one address and port, so the
-backend's view never belongs to one of them):
-
-- a start that came up with parts of the map missing, froze, stalled, or took longer than
-  `RV_SWAP_BOOT_LIMIT_SEC` (default 360) is restarted;
-- a server that hangs once it is up (its log silent for 2 minutes, or its process stopped) is restarted;
-- the active server swaps out when its match ends, when it crashes (the process ends or Server.dll logs
-  `[FATAL]`; errors that Server.dll catches and survives do not count), when a match runs longer than
-  30 minutes, or when it logs a flood of caught errors (300 a minute for 3 minutes).
-
-If the waiting server is not ready at that moment, the active one restarts. A waiting server has a whole
-match to come back up.
+**Server kits before 2026.10.10.2** have no warm spare. On those the container runs Zero Wait modes as
+server pairs instead: both servers use the mode's own port, the waiting one runs in a network namespace
+with no route out, and a few seconds after the round is over they swap. Pairs need `Network=host`, the
+capabilities `NET_ADMIN SYS_ADMIN SYS_RESOURCE`, `SecurityLabelDisable=true` (Docker:
+`--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --security-opt apparmor=unconfined`) and
+IP forwarding on the host (`net.ipv4.ip_forward=1`); the installer, run as root, sets all of this up.
+Without them the modes run as single servers and the log says why.
 
 ## Ports
 
@@ -469,9 +437,10 @@ match to come back up.
 | Duos | 7779/udp |
 | Trios | 7780/udp |
 | Squads | 7781/udp |
+| Zero Wait spares (kit 2026.10.10.2+) | the mode's port + 100: 7877, 7879, 7880, 7881/udp |
 | Linux web admin page | 8080/tcp (only for you) |
 
-Only the modes you run need their port. Community servers must be reachable from the internet on these
+Only the modes you run need their port, and a spare's port only with Zero Wait on for that mode. Community servers must be reachable from the internet on these
 ports; open them in your provider's firewall too.
 
 ---
