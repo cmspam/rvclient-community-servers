@@ -8,6 +8,10 @@
 //     its matchmaking data table start with 0 teams instead of 64, which saves 433 MB per mode. Only the
 //     known original file is patched, and RV_SLIM=off patches it back.
 //
+// Server kits from 2026.10.10.1 on free the same graphics and sound data in Server.dll itself (its
+// SlimMemory setting, on by default). With such a Server.dll, rvslim.dll is taken out of DList.ini (two
+// freeing the same data must not run together) and only the rest-api-client.dll patch is done here.
+//
 // Files are replaced by renaming a new copy over them, so running servers keep the copies they have open.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -55,22 +59,31 @@ export function patchRest(buf, on) {
     return md5(out) === (on ? REST_PATCHED : REST_ORIGINAL) ? out : null;
 }
 
+// Does this Server.dll free the graphics and sound data itself (its SlimMemory setting)?
+export function serverDllSlims(win64) {
+    try { return fs.readFileSync(join(win64, 'Server.dll')).includes(Buffer.from('SlimMemory=')); } catch { return false; }
+}
+
 // exe: the game server's RumbleverseClient-Win64-Shipping.exe. Never throws: a problem here must not
 // keep a server from starting.
 export function applySlim(exe, on = SLIM, log = msg => console.log(`[slim] ${msg}`)) {
     const win64 = dirname(exe), root = resolve(win64, '../../..');
     try {
         const dll = join(win64, 'rvslim.dll');
-        if (on) {
+        const useDll = on && !serverDllSlims(win64);   // Server.dll's own SlimMemory takes over from rvslim.dll
+        if (useDll) {
             const src = fs.readFileSync(DLL_SRC);
             if (!fs.existsSync(dll) || md5(fs.readFileSync(dll)) !== md5(src)) { replace(dll, src); log('installed rvslim.dll'); }
         }
         const ini = join(win64, 'DList.ini');
         if (fs.existsSync(ini)) {
             const text = fs.readFileSync(ini, 'latin1');
-            const next = editDList(text, on);
+            const next = editDList(text, useDll);
             if (next === null) log('DList.ini has no free slot, rvslim.dll not listed');
-            else if (next !== text) { replace(ini, Buffer.from(next, 'latin1')); log(on ? 'listed rvslim.dll in DList.ini' : 'took rvslim.dll out of DList.ini'); }
+            else if (next !== text) {
+                replace(ini, Buffer.from(next, 'latin1'));
+                log(useDll ? 'listed rvslim.dll in DList.ini' : on ? 'took rvslim.dll out of DList.ini: Server.dll frees that memory itself (SlimMemory)' : 'took rvslim.dll out of DList.ini');
+            }
         }
         const rest = join(root, REST);
         if (fs.existsSync(rest)) {

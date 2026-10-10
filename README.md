@@ -318,7 +318,9 @@ everything a player's PC needs for them. The Linux image frees that data while t
 - `rvslim.dll` (source: [`linux/src/rvslim.c`](linux/src/rvslim.c)) is listed in `DList.ini`, so the mod
   loader starts it with the server. It releases mesh render buffers, distance fields, texture and sound
   data. Collision, animation and gameplay data are not touched. It only acts on the game build it was
-  made for and does nothing on any other.
+  made for and does nothing on any other. Server kits from 2026.10.10.1 on do the same freeing in
+  `Server.dll` itself (the **Memory saving** setting, `SlimMemory`, on by default); with such a kit,
+  `rvslim.dll` is taken out of `DList.ini` and the kit's own setting is used.
 - Your own `rest-api-client.dll` (part of the game files) gets a two-byte change, so its matchmaking table
   starts empty instead of holding 64 teams that a server never fills (433 MB). Only the known original
   file is changed; nothing from the game is included in this project.
