@@ -19,11 +19,11 @@ export const HELP = `Rumbleverse server - terminal admin
                                        change a setting (e.g. rv set solo SpawnBot 40)
   rv update | rv rollback              install the latest server kit / go back one version
   rv supervisor start|stop|restart     all game servers at once (stop keeps them down)
-  rv logs <supervisor|setup|mode> [lines]
+  rv logs <supervisor|setup|mode|mode-spare> [lines]
   rv leave                             remove this server from the rVclient server list (before deleting it)
   rv setup                             first-time setup on the terminal
   rv reset-password                    new random web UI password
-  rv swap status | restart <mode>      Zero Wait: which server is active, which one waits
+  rv swap status | restart <mode>      Zero Wait: each mode's server and its warm spare (port + 100)
   rv swap on|off <mode>                Zero Wait on or off for a mode (no waiting between matches)
 
   Modes: ${MODES.map(m => m.key).join(', ')}`;

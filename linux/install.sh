@@ -218,21 +218,23 @@ else
     echo
 fi
 
-# ---------------------------------------------------------------- Zero Wait (server pairs)
+# ---------------------------------------------------------------- Zero Wait
+# The server kit's warm spare: a second server of the mode on its port + 100. Server kits before 2026.10.10.1
+# have none; on those the container runs server pairs instead, which need IP forwarding and network rights
+# (given when installed as root).
 bold "8. Zero Wait (no waiting between matches)"
 SWAP=""
-if [ "$IS_ROOT" = 0 ]; then
-    info "Zero Wait needs network rights a container only gets when installed as root. Skipped"
-    info "(install with sudo to be able to use it)."
-else
-    # The rights Zero Wait needs are always given, so it can be switched on per mode later on the web page.
-    printf '# Rumbleverse server (Zero Wait): the container forwards between its game servers and the internet.\nnet.ipv4.ip_forward = 1\n' > /etc/sysctl.d/80-rvserver-forward.conf
+if [ "$IS_ROOT" = 1 ]; then
+    printf '# Rumbleverse server (Zero Wait on server kits before 2026.10.10.1): the container forwards between its game servers and the internet.\nnet.ipv4.ip_forward = 1\n' > /etc/sysctl.d/80-rvserver-forward.conf
     sysctl -q -w net.ipv4.ip_forward=1
+fi
+if true; then
     if [ -z "${MODES:-}" ]; then info "No modes chosen yet: switch it on later on the web page (Zero Wait switch) or with rv swap on <mode>."
     else
         info "Normally a mode needs a minute or two between matches while its server restarts. With Zero Wait"
         info "a second server of that mode is already started and waiting, so players queue straight into the"
-        info "next match. It needs memory for one more server of that mode (about $((EACH / 1000)).$(( (EACH % 1000) / 100 )) GB)."
+        info "next match. It needs memory for one more server of that mode (about $((EACH / 1000)).$(( (EACH % 1000) / 100 )) GB)"
+        info "and that server's port open to players: the mode's port + 100 (Solos 7877, Duos 7879, Trios 7880, Squads 7881)."
         # Suggest the battle royale modes (in the order chosen) that still fit next to the modes chosen.
         LEFT=$(( USABLE - FIRST - (COUNT - 1) * EACH )); DEF_SWAP=""
         for m in solo duos trios squads; do
@@ -293,13 +295,13 @@ OPEN_PORTS=""
 [ "$USE_WEB" = 1 ] && OPEN_PORTS="$WEB_PORT/tcp"
 if [ "$IS_ROOT" = 1 ]; then
     if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-        firewall-cmd -q --permanent --add-port=7777-7781/udp
+        firewall-cmd -q --permanent --add-port=7777-7781/udp; firewall-cmd -q --permanent --add-port=7877-7881/udp
         [ "$USE_WEB" = 1 ] && firewall-cmd -q --permanent --add-port="$WEB_PORT/tcp"
-        firewall-cmd -q --reload; info "Firewall (firewalld): opened UDP 7777-7781${OPEN_PORTS:+ and $OPEN_PORTS}."
+        firewall-cmd -q --reload; info "Firewall (firewalld): opened UDP 7777-7781, 7877-7881 (Zero Wait)${OPEN_PORTS:+ and $OPEN_PORTS}."
     elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw allow 7777:7781/udp >/dev/null
+        ufw allow 7777:7781/udp >/dev/null; ufw allow 7877:7881/udp >/dev/null
         [ "$USE_WEB" = 1 ] && ufw allow "$WEB_PORT/tcp" >/dev/null
-        info "Firewall (ufw): opened UDP 7777-7781${OPEN_PORTS:+ and $OPEN_PORTS}."
+        info "Firewall (ufw): opened UDP 7777-7781, 7877-7881 (Zero Wait)${OPEN_PORTS:+ and $OPEN_PORTS}."
     fi
 fi
 
@@ -336,8 +338,9 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         echo "Volume=$ZIP:/game.zip:ro,z"
         echo "Volume=$DATA:/data:Z"
         echo "Pull=newer"   # a newer image is taken at a start; the container restarts for it when its servers are empty
-        # Zero Wait: network namespaces and nftables; SYS_RESOURCE also for KSM and the waiting servers' priority
-        CAPS=""; [ "$USE_KSM" = 1 ] && CAPS="SYS_RESOURCE"; [ "$IS_ROOT" = 1 ] && CAPS="SYS_RESOURCE NET_ADMIN SYS_ADMIN"
+        # SYS_RESOURCE: KSM, and starting game servers at low CPU priority; NET_ADMIN SYS_ADMIN: the server pairs
+        # of server kits before 2026.10.10.1 (network namespaces and nftables)
+        CAPS="SYS_RESOURCE"; [ "$IS_ROOT" = 1 ] && CAPS="SYS_RESOURCE NET_ADMIN SYS_ADMIN"
         [ -n "$CAPS" ] && echo "AddCapability=$CAPS"
         [ "$IS_ROOT" = 1 ] && echo "SecurityLabelDisable=true"
         [ "$USE_NTSYNC" = 1 ] && echo "AddDevice=/dev/ntsync"
@@ -366,7 +369,7 @@ else
     if [ "$IS_ROOT" = 1 ]; then
         ARGS+=(--cap-add SYS_RESOURCE --cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt label=disable)
         [ "$ENGINE" = docker ] && ARGS+=(--security-opt apparmor=unconfined)
-    elif [ "$USE_KSM" = 1 ]; then ARGS+=(--cap-add SYS_RESOURCE); fi
+    else ARGS+=(--cap-add SYS_RESOURCE); fi
     [ "$USE_NTSYNC" = 1 ] && ARGS+=(--device /dev/ntsync)
     for e in "${ENV_ARGS[@]}"; do ARGS+=(-e "$e"); done
     if [ "$ENGINE" = docker ] && [ "$IS_ROOT" = 1 ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
@@ -435,7 +438,7 @@ info "Terminal menu:    $ENGINE exec -it $NAME rv menu"
 if [ -n "$QUADLET" ]; then
     if [ "$IS_ROOT" = 1 ]; then info "Service:          systemctl status $NAME"; else info "Service:          systemctl --user status $NAME"; fi
 fi
-info "Game ports:       UDP 7777-7781 (also open them in your provider's firewall, if it has one)"
+info "Game ports:       UDP 7777-7781, and 7877-7881 for Zero Wait (also open them in your provider's firewall, if it has one)"
 echo
 if [ "${EDITION:-}" = community ]; then
     info "Your community server waits for approval by the rVclient admins. Nothing else to do."

@@ -2,8 +2,8 @@
 //
 // The image knows the build it is (/opt/rv/IMAGE: its registry tag and git revision, written when it is
 // built). About once an hour (RV_IMAGE_UPDATE_HOURS) this asks the registry which build that tag points to
-// now. When it is a newer one, it waits until every game server is empty - the main supervisor's and the
-// server pairs' active ones - and then stops the container. The service manager starts it again and, with
+// now. When it is a newer one, it waits until every game server is empty - the supervisor's (warm spares
+// included) and the server pairs' active ones - and then stops the container. The service manager starts it again and, with
 // Quadlet's Pull=newer (podman run --pull=newer), on the new image. A match is never cut off for an update;
 // after RV_IMAGE_UPDATE_MAX_HOURS (default 6) of servers never being empty it restarts anyway.
 //
@@ -51,8 +51,8 @@ export async function remoteRevision(ref, fetchFn = fetch) {
     return cfg.config?.Labels?.['org.opencontainers.image.revision'] || '';
 }
 
-// Players on any game server right now (main supervisor + pairs' active servers); null if unknown.
-async function playersNow() {
+// Players on any game server right now (the supervisor's, warm spares included, + pairs' active servers); null if unknown.
+export async function playersNow() {
     let n = 0;
     try { n += ((await admin('/instances')).instances || []).reduce((s, i) => s + (i.running ? Number(i.players) || 0 : 0), 0); }
     catch { return null; }

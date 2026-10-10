@@ -3,6 +3,7 @@
 // Everything goes through the places the Windows "rV Modes (server)" app uses: the supervisor's
 // local admin API, modes.json (modes on/off) and Config.<mode>.ini (game settings).
 import { pairStatus, restartActive, pairsAvailable, swapModes, setSwapMode } from './pairs.mjs';
+import { kitHasWarmSpare, isSpare, warmSpareModes, setWarmSpare, SPARE_PORT_OFFSET } from './warmspare.mjs';
 import { existsSync, statSync, openSync, readSync, closeSync, writeFileSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -143,9 +144,17 @@ export function stateLabel(i) {
 }
 
 export async function instances() {
-    const list = (await admin('/instances')).instances || [];
+    const all = (await admin('/instances')).instances || [];
     const procs = gameProcesses();
     const modes = readJson(modesFile(), {});
+    // Warm spares (warmspare.mjs) are shown with their mode: i.spare = the spare's state.
+    const list = all.filter(i => !isSpare(i.id));
+    for (const s of all.filter(i => isSpare(i.id))) {
+        const main = list.find(i => i.id === s.spareOf || `${i.id}-spare` === s.id);
+        const p = procs.find(x => x.instance === s.id);
+        if (main) main.spare = { id: s.id, port: s.port, running: s.running, players: s.players ?? 0, state: stateLabel(s),
+            uptimeSec: s.uptimeSec || 0, rssMb: p?.rssMb ?? null, swapMb: p?.swapMb ?? null, restarts: s.restarts, crashes: s.crashes };
+    }
     for (const i of list) {
         const p = procs.find(x => x.instance === i.id);
         i.rssMb = p?.rssMb ?? null; i.swapMb = p?.swapMb ?? null;
@@ -280,9 +289,14 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
         : 'Saved - takes effect when the server next restarts (BR modes restart after every match).';
 }
 
-// Server pairs: whether they can run here, and which modes are chosen.
-export function pairsInfo() { const a = pairsAvailable(); return { available: a.ok, reason: a.reason, modes: swapModes() }; }
-export const setPair = (mode, on) => setSwapMode(mode, on);
+// Zero Wait: the kit's warm spares where the kit has them, else server pairs. Whether it can run here and
+// which modes have it.
+export function pairsInfo() {
+    if (kitHasWarmSpare()) return { available: true, reason: '', kind: 'spare', portOffset: SPARE_PORT_OFFSET, modes: warmSpareModes() };
+    const a = pairsAvailable();
+    return { available: a.ok, reason: a.reason, kind: 'pairs', modes: swapModes() };
+}
+export const setPair = (mode, on) => kitHasWarmSpare() ? setWarmSpare(resolveId(mode).key, on) : setSwapMode(mode, on);
 
 export const node = () => admin('/node');
 
@@ -307,9 +321,10 @@ export const rollback = () => admin('/node/rollback', 'POST');
 export function logFile(which) {
     if (which === 'supervisor') return join(LOGS, 'supervisor.log');
     if (which === 'setup') return SETUP_LOG;
-    const m = MODES.find(x => x.key === which || x.id === which);
-    if (m) return join(LOGS, 'game', `server-${m.id}.log`);
-    throw new Error('Unknown log (supervisor, setup, or a mode name).');
+    const spare = /-spare$/.test(which || ''), base = spare ? which.slice(0, -6) : which;
+    const m = MODES.find(x => x.key === base || x.id === base);
+    if (m) return join(LOGS, 'game', `server-${m.id}${spare ? '-spare' : ''}.log`);
+    throw new Error('Unknown log (supervisor, setup, a mode name, or <mode>-spare).');
 }
 
 export function tail(file, maxLines = 200) {

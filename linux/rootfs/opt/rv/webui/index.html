@@ -179,7 +179,8 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
     <p class="muted">Switching a mode off stops an empty server at once; a server with players closes after its match.
       Settings changes take effect at the next restart (BR modes restart after every match).
       Zero Wait: players queue straight into the next match when one ends - a second server of the mode is
-      already started and waiting (needs memory for one more server of that mode).</p>
+      already started and waiting (needs memory for one more server of that mode, and its port, the mode's
+      port + 100, open to players).</p>
   </div>
 
   <div class="card">
@@ -218,7 +219,7 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
 <script>
 const $ = id => document.getElementById(id);
 const views = ['vLogin', 'vPw', 'vSetup', 'vDash'];
-let timer = null, nodeTimer = null, current = null, settingsMode = null;
+let timer = null, nodeTimer = null, current = null, settingsMode = null, lastPairs = null;
 
 function show(v) {
   views.forEach(x => $(x).classList.toggle('hidden', x !== v));
@@ -357,15 +358,16 @@ async function refresh() {
   $('bSupStart').classList.toggle('hidden', sup.state !== 'stopped');
   $('bSupStop').classList.toggle('hidden', sup.state === 'stopped');
   const pairs = st.pairs || { available: false, reason: 'not supported by this image', modes: [] };
+  lastPairs = pairs;
   const rows = st.instances.map(i => {
     const [label, cls] = stateOf(i);
     const mem = i.rssMb == null ? '-' : `${(i.rssMb / 1024).toFixed(2)} GB${i.swapMb ? ` (+${(i.swapMb / 1024).toFixed(1)} zram)` : ''}`;
     return `<tr>
-      <td><b>${esc(i.label)}</b><div class="muted">port ${i.port}${i.pair ? ` - Zero Wait: server ${esc(i.pair.active)} active, ${esc(i.pair.waiting)} ${esc(i.pair.waitingState)}` : ''}</div></td>
+      <td><b>${esc(i.label)}</b><div class="muted">port ${i.port}${i.pair ? ` - Zero Wait: server ${esc(i.pair.active)} active, ${esc(i.pair.waiting)} ${esc(i.pair.waitingState)}` : ''}${i.spare ? ` - Zero Wait spare: port ${i.spare.port}, ${esc(i.spare.state)}, ${i.spare.players} player(s)` : ''}</div></td>
       <td><label class="switch"><input type="checkbox" data-mode="${i.mode}" ${i.modeOn ? 'checked' : ''}></label></td>
-      <td><label class="switch"><input type="checkbox" data-pair="${i.mode}" ${pairs.modes.includes(i.mode) ? 'checked' : ''}${pairs.available ? '' : ` disabled title="${esc('Zero Wait cannot run here: ' + pairs.reason)}"`}></label></td>
+      <td><label class="switch"><input type="checkbox" data-pair="${i.mode}" ${pairs.modes.includes(i.mode) ? 'checked' : ''}${!pairs.available ? ` disabled title="${esc('Zero Wait cannot run here: ' + pairs.reason)}"` : pairs.kind === 'spare' && i.mode === 'playground' ? ' disabled title="Playground has no matches to wait between"' : ''}></label></td>
       <td><span class="${cls}"><b>${label}</b></span></td>
-      <td>${i.players ?? 0}</td>
+      <td>${(i.players ?? 0) + (i.spare?.players ?? 0)}</td>
       <td class="hide-sm">${fmtUp(i.uptimeSec)}</td>
       <td class="hide-sm">${mem}</td>
       <td class="hide-sm">${i.restarts} / ${i.crashes}</td>
@@ -424,8 +426,11 @@ $('tModes').onclick = e => {
 $('tModes').onchange = e => {
   const c = e.target;
   if (c.dataset.pair) {
-    const q = c.checked ? `Switch Zero Wait on for ${c.dataset.pair}? Its server finishes its current match, then a second server keeps the next match ready (needs memory for one more server).`
-      : `Switch Zero Wait off for ${c.dataset.pair}? It runs as a single server again at once (players on it are disconnected).`;
+    const spare = (lastPairs || {}).kind === 'spare';
+    const q = c.checked ? (spare ? `Switch Zero Wait on for ${c.dataset.pair}? A second server of the mode starts on the mode's port + ${lastPairs.portOffset} and takes the next players whenever the first one is busy (needs memory for one more server, and that port open to players).`
+        : `Switch Zero Wait on for ${c.dataset.pair}? Its server finishes its current match, then a second server keeps the next match ready (needs memory for one more server).`)
+      : (spare ? `Switch Zero Wait off for ${c.dataset.pair}? Its second server closes after its current match.`
+        : `Switch Zero Wait off for ${c.dataset.pair}? It runs as a single server again at once (players on it are disconnected).`);
     if (!confirm(q)) { c.checked = !c.checked; return; }
     return act(() => post('/api/pairs', { mode: c.dataset.pair, on: c.checked }), `${c.dataset.pair}: Zero Wait ${c.checked ? 'on' : 'off'}.`);
   }

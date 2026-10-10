@@ -11,6 +11,8 @@
 // it mid-match. So an existing file is replaced the Linux way instead: the copy goes to a temporary
 // file in the same folder, which is then renamed over the old one. Running servers keep the old
 // file they have open; the next start loads the new one.
+//
+// Game servers start at the lowest CPU priority until they are joinable (bootnice.mjs).
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -22,12 +24,14 @@ import { readState, readJson, MODES, DATA, INSTANCES, SUP_DIR } from './lib.mjs'
 import { applySlim } from './slim.mjs';
 import { applyBots } from './bots.mjs';
 import { applyAddons } from './addons.mjs';
+import { lowPriorityPrefix, normalPriorityWhenJoinable } from './bootnice.mjs';
 
 const WINE = process.env.RV_WINE || 'wine';
 // RV_KSM=on: start through rv-ksm, which marks the game server's memory as mergeable, so the
 // kernel's KSM keeps identical pages of several servers only once (needs CAP_SYS_RESOURCE and
 // KSM switched on on the host: /sys/kernel/mm/ksm/run = 1).
 const KSM = /^(1|on|yes|true)$/i.test(process.env.RV_KSM || '');
+const originalSpawn = childProcess.spawn;
 const isExe = cmd => typeof cmd === 'string' && /\.exe$/i.test(cmd);
 
 function viaWine(fn) {
@@ -37,8 +41,10 @@ function viaWine(fn) {
         applySlim(cmd);
         applyBots(cmd);
         applyAddons(cmd);
-        const child = KSM ? fn.call(this, 'rv-ksm', [WINE, cmd, ...args], ...rest)
-            : fn.call(this, WINE, [cmd, ...args], ...rest);
+        // nice 19 until joinable (bootnice.mjs), then rv-ksm (RV_KSM), then Wine.
+        const run = [...lowPriorityPrefix(), ...(KSM ? ['rv-ksm'] : []), WINE, cmd, ...args];
+        const child = fn.call(this, run[0], run.slice(1), ...rest);
+        if (fn === originalSpawn) normalPriorityWhenJoinable(cmd, args, child);
         return child;
     };
 }

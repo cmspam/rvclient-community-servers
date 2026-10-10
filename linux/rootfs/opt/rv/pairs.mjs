@@ -422,13 +422,14 @@ export function prepareModes(log) {
     }
     return true;
 }
-// Where pairs cannot run: the main supervisor reads the owner's modes.json again.
-export function releaseModes(log) {
+// Where pairs do not run (they cannot here, or the kit's warm spare does Zero Wait): the main supervisor
+// reads the owner's modes.json again.
+export function releaseModes(log, why = 'pairs cannot run here') {
     const inst = readJson(INSTANCES, null);
     if (inst && inst.modesFile === 'modes.main.json') {
         inst.modesFile = 'modes.json';
         writeJson(INSTANCES, inst, 0o644);
-        log('[pairs] pairs cannot run here - the main supervisor reads modes.json');
+        log(`[pairs] ${why} - the main supervisor reads modes.json`);
     }
     updateState({ pairedModes: [] });
 }

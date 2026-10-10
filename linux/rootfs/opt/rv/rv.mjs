@@ -15,8 +15,9 @@ import { createManager } from './manager.mjs';
 import { CONTROL_SOCK, applySettingDefaults } from './ops.mjs';
 import { runCommand, menu, HELP } from './cli.mjs';
 import { startKitAutoUpdate } from './kit-update.mjs';
-import { startImageAutoUpdate } from './image-update.mjs';
+import { startImageAutoUpdate, playersNow } from './image-update.mjs';
 import { pairsAvailable, prepareModes, releaseModes, createPairs, swapModes } from './pairs.mjs';
+import { kitHasWarmSpare, prepareWarmSpare } from './warmspare.mjs';
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const cmd = process.argv[2] || 'run';
@@ -51,9 +52,17 @@ async function run() {
     const manager = createManager({ log });
     const setupJob = { running: false, error: '', done: false, log: [] };
 
-    // Server pairs (pairs.mjs): where they can run, the main supervisor runs the modes that are not pairs.
-    let pairs = null;
+    // Zero Wait: with a kit that has the warm spare (warmspare.mjs), the supervisor runs every mode and its
+    // spares itself. With an older kit, server pairs (pairs.mjs) where they can run: the main supervisor runs
+    // the modes that are not pairs.
+    let pairs = null, switchTimer = null;
     async function startServers() {
+        if (kitHasWarmSpare()) {
+            releaseModes(log, 'Zero Wait runs on the server kit\'s warm spares');
+            prepareWarmSpare(log);
+            await manager.start();
+            return;
+        }
         const av = pairsAvailable();
         if (av.ok && prepareModes(log)) {
             await manager.start();
@@ -63,6 +72,22 @@ async function run() {
             if (swapModes().length) log(`[pairs] server pairs cannot run here: ${av.reason} - all modes run as single servers`);
             releaseModes(log);
             await manager.start();
+        }
+        // The kit updates itself to one with the warm spare while pairs run: once nobody plays (or after
+        // RV_IMAGE_UPDATE_MAX_HOURS), the container stops and comes back with warm spares instead of pairs.
+        if (pairs && !switchTimer) {
+            let since = 0;
+            switchTimer = setInterval(async () => {
+                if (!kitHasWarmSpare()) return;
+                since ||= Date.now();
+                const n = await playersNow().catch(() => null);
+                const maxH = Number(process.env.RV_IMAGE_UPDATE_MAX_HOURS) > 0 ? Number(process.env.RV_IMAGE_UPDATE_MAX_HOURS) : 6;
+                if (n !== 0 && Date.now() - since < maxH * 3600 * 1000) return;
+                clearInterval(switchTimer);
+                log('[spare] the server kit now has the warm spare - restarting to run Zero Wait on it instead of server pairs');
+                shutdown('switch to warm spares');
+            }, 60000);
+            switchTimer.unref();
         }
     }
 
@@ -144,7 +169,10 @@ try {
     if (cmd === 'run') await run();
     else if (cmd === 'setup') await interactiveSetup();
     else if (cmd === 'menu') await menu();
-    else if (cmd === 'swap') (await import('./pairs.mjs')).pairsCli(process.argv.slice(3));
+    else if (cmd === 'swap') {
+        if (kitHasWarmSpare()) await (await import('./warmspare.mjs')).spareCli(process.argv.slice(3));
+        else (await import('./pairs.mjs')).pairsCli(process.argv.slice(3));
+    }
     else if (cmd === 'reset-password') {
         ensureDirs();
         const { resetPassword } = await import('./webui/auth.mjs');
