@@ -12,11 +12,11 @@ Host your own Rumbleverse server with rVclient, on **Windows** or **Linux**.
 
 - You need **your own copy of Rumbleverse** (the game files). This project never provides game files.
 - Players need the **rVclient launcher 1.7.49 or newer**.
-- Each game mode is its own server and needs about **4 GB of RAM** (about 2.5 GB on Linux, see [Saving memory](#saving-memory)).
+- Each game mode is its own server and needs about **4 GB of RAM**.
 - Server updates arrive by themselves through the rVclient backend.
 
 **Contents:** [Windows](#windows) · [Linux](#linux) · [Managing the server](#managing-the-server-on-linux) ·
-[Saving memory](#saving-memory) · [Ports](#ports) · [Removing a server](#removing-a-server) · [Problems](#problems)
+[Memory sharing](#memory-sharing-between-modes-ksm) · [Ports](#ports) · [Removing a server](#removing-a-server) · [Problems](#problems)
 
 ---
 
@@ -29,7 +29,7 @@ Host your own Rumbleverse server with rVclient, on **Windows** or **Linux**.
 - RAM: about 3.5 to 4 GB for each mode you run (Playground alone is the lightest)
 - Disk: about 15 GB if setup copies your game files, about 1 GB if it links them
 - Private server: Tailscale or Radmin VPN on your PC and your friends' PCs, same network
-- Community server: a VPS or dedicated server, with **UDP 7777-7781** open in your provider's firewall (and 7877-7881 for Zero Wait)
+- Community server: a VPS or dedicated server, with **UDP 7777-7781** open in your provider's firewall
 
 ### Steps
 
@@ -66,7 +66,7 @@ software inside it is the official one and updates itself exactly as on Windows.
 - **Podman** or **Docker** (see step 1)
 - RAM: about 3 GB for one mode, about 2.5 GB for each further mode (1.8 GB with memory sharing)
 - Disk: about 25 GB free
-- A public IPv4 address; **UDP 7777-7781** reachable, and 7877-7881 for Zero Wait (also in your provider's firewall, if it has one)
+- A public IPv4 address; **UDP 7777-7781** reachable (also in your provider's firewall, if it has one)
 - Your Rumbleverse game zip (about 11 GB)
 
 ### Easiest way: from your own computer, onto a fresh VPS
@@ -113,7 +113,7 @@ It asks:
 5. your **public IP** (detected for you, press Enter)
 6. which **modes** to run (it suggests how many fit in your RAM)
 7. which modes get **Zero Wait**, no waiting between matches (see
-   [Zero Wait](#zero-wait-no-waiting-between-matches-linux); about 2.5 GB more RAM per mode and its port + 100 open to players; it suggests
+   [Zero Wait](#zero-wait-no-waiting-between-matches-linux); about 2.5 GB more RAM per mode; it suggests
    the modes that fit, empty for none, and it can be switched per mode later on the web page)
 8. whether to switch on **memory sharing** (recommended with more than one mode)
 9. whether to turn on the **web admin page**
@@ -157,8 +157,7 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_MODES` | any of `solo,playground,duos,trios,squads`, or `all` |
 | `RV_PUBLIC_IP` | address players connect to (detected if empty) |
 | `RV_REGION` | e.g. `ap-northeast-1` (measured by ping if empty) |
-| `RV_SLIM` | `off` = no RAM saving (default `on`; see [Saving memory](#saving-memory)) |
-| `RV_KSM` | `on` = memory sharing between modes (see [Saving memory](#saving-memory)) |
+| `RV_KSM` | `on` = memory sharing between modes (see [Memory sharing](#memory-sharing-between-modes-ksm)) |
 | `RV_WEBUI` | `off` = no web admin page (use the terminal menu) |
 | `RV_WEBUI_PORT` | web page port (default `8080`) |
 | `RV_WEBUI_BIND` | address of the web page (default `0.0.0.0`; `127.0.0.1` = only through an SSH tunnel) |
@@ -168,7 +167,6 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_IMAGE_UPDATE_HOURS` | hours between image checks (default `1`) |
 | `RV_IMAGE_UPDATE_MAX_HOURS` | restart for a new image after this many hours even with players on (default `6`) |
 | `RV_SWAP` | modes with Zero Wait at the first start, e.g. `solo,duos` (see [Zero Wait](#zero-wait-no-waiting-between-matches-linux)) |
-| `RV_WARM_SPARE_MIN_FREE_MB` | free memory a Zero Wait spare needs to start (default 2500) |
 | `RV_BOOT_NICE` | `off` = game servers start at the normal CPU priority (default: lowest until joinable) |
 | `RV_NODE_ID`, `RV_NODE_KEY` | move an existing registration to this machine |
 
@@ -191,7 +189,7 @@ Volume=/srv/rvserver:/data:Z
 Pull=newer
 # ntsync, if the kernel has it (see "Faster thread synchronization"):
 #AddDevice=/dev/ntsync
-# Memory sharing between modes (also switch KSM on, see "Saving memory"):
+# Memory sharing between modes (also switch KSM on, see "Memory sharing between modes"):
 #AddCapability=SYS_RESOURCE
 #Environment=RV_KSM=on
 # Optional answers instead of the web setup form:
@@ -308,38 +306,16 @@ Data folder contents: `server/` (game and server kit), `state/` (registration an
 
 ---
 
-## Saving memory
-
-### RAM saving (Linux, on by default)
-
-The game server is the game client started without graphics and sound, and it still loads and keeps
-everything a player's PC needs for them. The Linux image frees that data while the map loads:
-
-- `rvslim.dll` (source: [`linux/src/rvslim.c`](linux/src/rvslim.c)) is listed in `DList.ini`, so the mod
-  loader starts it with the server. It releases mesh render buffers, distance fields, texture and sound
-  data. Collision, animation and gameplay data are not touched. It only acts on the game build it was
-  made for and does nothing on any other. Server kits from 2026.10.10.1 on do the same freeing in
-  `Server.dll` itself (the **Memory saving** setting, `SlimMemory`, on by default); with such a kit,
-  `rvslim.dll` is taken out of `DList.ini` and the kit's own setting is used.
-- Your own `rest-api-client.dll` (part of the game files) gets a two-byte change, so its matchmaking table
-  starts empty instead of holding 64 teams that a server never fills (433 MB). Only the known original
-  file is changed; nothing from the game is included in this project.
-
-Both are put back in place before every server start, so server kit updates do not undo them.
-`RV_SLIM=off` turns it off and puts the original `DList.ini` entry and `rest-api-client.dll` back.
-
-### Memory sharing between modes (KSM)
+## Memory sharing between modes (KSM)
 
 Each mode is a separate game server, and the servers hold a lot of identical memory. The kernel can keep
 identical memory only once (KSM, Kernel Samepage Merging). Measured with all five modes running:
 
-| | Neither | RAM saving | Memory sharing | Both |
-|---|---|---|---|---|
-| First mode | about 3.9 GB | about 2.5 GB | about 3.9 GB | about 2.5 GB |
-| Each further mode | about 3.9 GB | about 2.5 GB | about 1.7 GB | about 1.8 GB |
-| All five modes | about 19 GB | about 12 GB | about 11 GB | about 10 GB |
-
-With RAM saving, memory sharing mostly helps with three modes or more.
+| | Without | With memory sharing |
+|---|---|---|
+| First mode | about 3.9 GB | about 3.9 GB |
+| Each further mode | about 3.9 GB | about 1.7 GB |
+| All five modes | about 19 GB | about 11 GB |
 
 The installer sets it up when you answer yes. By hand (Linux 6.4 or newer, container run as root):
 
@@ -364,36 +340,6 @@ minutes). Leave some room for that: free RAM, zram (compressed swap in RAM) or a
 it on with `Enable-MMAgent -PageCombining` (as administrator, then restart).
 
 ---
-
-## Better bots (Linux, off by default)
-
-Experimental, and off by default: on a server with 2 CPUs, building the bots' paths caused short hitches
-every few seconds while the bots spread out after the landing. `RV_BOTS=on` switches it on.
-
-The battle royale bots run the game's own AI. On a server they mostly stand still or jump in place: they
-see 5 m ahead, look for players only within 30 m, and their paths are built while the game runs, which
-`Server.dll` limits to 2 pieces at a time, far too slow for 20 or 30 bots. The Linux image changes that
-before every server start, when switched on:
-
-- `rvbots.dll` (source: [`linux/src/rvbots.c`](linux/src/rvbots.c)) is listed in `DList.ini`. It lets bots
-  look for players within 150 m, see 40 m in a 180 degree view, and go after players they have no path to
-  yet. Attacks, deliberate misses, dodges and teamwork stay as the game made them. It only acts on the game
-  build it was made for.
-- Your own `Server.dll` (part of the server kit) gets one number changed: paths built at once, 2 to 1024
-  (the engine's own default). Only when the instruction that sets it is found exactly once;
-  otherwise it is left alone. Nothing from the server kit is included in this project.
-- Bot navigation is switched on in each battle royale mode's config (`BotNavigation=true`,
-  `BotNavRadius=100`), so it overrides the admin panel's bot navigation switch while this is on.
-
-| Variable | Default | |
-|---|---|---|
-| `RV_BOTS` | `off` | `on` switches it on; off takes `rvbots.dll` out and sets `Server.dll` back to 2 (the config is left as it is) |
-| `RV_BOT_NAV_JOBS` | 1024 | paths built at once |
-| `RV_BOT_NAV_RADIUS` | 100 | metres around each bot that get paths |
-| `RVBOTS_PLAYER_SEARCH_RADIUS` | 150 | metres in which bots look for players |
-| `RVBOTS_SIGHT_RADIUS` | 40 | metres bots see |
-| `RVBOTS_SIGHT_ANGLE` | 90 | degrees to each side bots see |
-| `RVBOTS_KEEP_UNREACHABLE_PLAYERS` | 1 | 0 = only go after players they already have a path to |
 
 ## Add-ons (Linux)
 
@@ -445,41 +391,74 @@ Without ntsync the server works the same way, using Wine's older method.
 ## Zero Wait: no waiting between matches (Linux)
 
 A server needs a minute or more to start its next match. With Zero Wait, players queue straight into
-the next match instead: a second server of the mode is already started and waiting in its lobby.
+the next match instead. With enough memory, a mode runs as a pair of servers that take turns: while one runs a match, the other has already started and waits in its
+lobby, with no network at all. A few seconds after the round is over (once the players have their
+results and the server has sent the match reports for Game Records, at most 15 seconds), they swap: the waiting server gets the mode's game port and its connection, and the next
+match starts at once. The other one restarts and becomes the one waiting. Both use the same public
+address, game port and server identity, so to the backend the mode is still one server; the waiting one
+never talks to it. If the waiting server is not ready when a match ends, nothing swaps and the server
+restarts as usual.
 
-**Server kit 2026.10.10.1 and newer** have this built in as the **warm spare**, and the container uses it
-as it is. Each battle royale mode with Zero Wait gets a second server, `<mode>-spare`, on the mode's port
-+ 100 (Solos 7877, Duos 7879, Trios 7880, Squads 7881), with the same `Config.<mode>.ini`. Both are
-ordinary game servers: each reports to the backend with its own port, and matchmaking sends players to
-whichever one is in its lobby. While one plays a match or restarts after it, the other takes the next
-players. Nothing is switched at the network level. Playground has no matches, so it has no spare.
+Switch it on per mode with the **Zero Wait** switch on the web admin page, or `rv swap on <mode>` (`rv swap off
+<mode>` to go back). A mode that becomes a pair finishes its current match first; a pair that is switched off
+stops at once and the mode runs as a single server again. `RV_SWAP` (for example `RV_SWAP=solo,duos`, or
+`all`) sets the first choice when the server starts for the first time. Each chosen mode that is switched on
+runs as a pair, inside the same container; the other modes run as usual. A pair needs memory
+for two servers of that mode (2 to 3 GB each). In the container's settings (Quadlet):
 
-- The spare's port must be open to players like the mode's own port (provider firewall, port forward).
-  The installer opens 7877-7881/udp in firewalld or ufw.
-- A spare only starts with 2.5 GB of free memory (`RV_WARM_SPARE_MIN_FREE_MB` changes this). Once
-  started, it restarts after its matches like any server.
-- Switch it per mode with the **Zero Wait** switch on the web admin page, `rv swap on <mode>` /
-  `rv swap off <mode>`, or the **Warm spare server** setting. They all set `WarmSpare=true` or `false` in
-  `Config.<mode>.ini`. Off: the spare closes after its current match.
-- When a container first starts on such a kit, the modes that had Zero Wait before (or are listed in
-  `RV_SWAP`) keep it, and the other battle royale modes get `WarmSpare=false`.
-- `rv swap status` and the web page show each mode's server and its spare (port, state, players).
-  `rv logs <mode>-spare` shows the spare's log.
+```ini
+Network=host
+AddCapability=NET_ADMIN SYS_ADMIN SYS_RESOURCE
+SecurityLabelDisable=true
+Environment=RV_SWAP=solo,duos
+```
 
-Every game server, spare or not, starts at the lowest CPU priority (nice 19) and gets the normal
-priority once it is joinable, so that a server starting next to a match does not slow the match down.
-This needs the `SYS_RESOURCE` capability (the installer always adds it); `RV_BOOT_NICE=off` turns it off.
+With Docker: `--network host --cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --security-opt apparmor=unconfined`.
+With `SYS_RESOURCE`, the waiting server of a pair runs at the lowest CPU priority, so that its starts never
+slow down a match on the box; the active one runs at the normal priority. Without it, both run at the normal
+priority.
+The container's network needs IP forwarding on (`net.ipv4.ip_forward=1`). With `Network=host` that is the
+host's setting (the installer switches it on; a host with only host-network containers may have
+it off). The container can also use its own network (a Podman or Docker network, or another container's
+network such as a VPN tunnel): the game ports must then reach the container's address, and forwarding is
+set for that network (Quadlet `Sysctl=net.ipv4.ip_forward=1`, Docker `--sysctl net.ipv4.ip_forward=1`; for
+a network shared with another container, on that container). The container
+starts both servers of a pair itself, from the same server folder as every other mode, each in its own
+network namespace. They share the game files and the mode's `Config.<mode>.ini`; each has its own instance
+id (`solo-01a`, `solo-01b`: its own log files next to the game) and its own Wine prefix under
+`data/swap/<mode>-a` and `-b`. Settings changed with `rv set` or the web page apply to both servers of a
+pair from their next start (after their next match). The waiting server has no route out: anything it
+tries to reach fails at once, as with no network. If the pairs cannot run (for example without the capabilities above), the modes run as single
+servers, the log says why, and the Zero Wait switch on the web page is greyed out with the reason. The
+installer (run as root) always adds the capabilities and switches IP forwarding on, so Zero Wait can be
+switched on per mode at any time.
 
-When a running container's server kit updates itself to one with the warm spare, the container restarts
-once nobody is playing (or after `RV_IMAGE_UPDATE_MAX_HOURS`) and comes back with warm spares.
+The web admin page and `rv status` show a paired mode with its active server (and which one is waiting);
+its Restart button restarts the active server (the waiting one takes over), and its On switch starts or
+stops the pair. `podman exec <container> rv swap status` shows, for each mode, which server is active and
+whether the other one is waiting in its lobby; `rv swap restart <mode>` restarts the active one.
 
-**Server kits before 2026.10.10.1** have no warm spare. On those the container runs Zero Wait modes as
-server pairs instead: both servers use the mode's own port, the waiting one runs in a network namespace
-with no route out, and a few seconds after the round is over they swap. Pairs need `Network=host`, the
-capabilities `NET_ADMIN SYS_ADMIN SYS_RESOURCE`, `SecurityLabelDisable=true` (Docker:
-`--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --security-opt apparmor=unconfined`) and
-IP forwarding on the host (`net.ipv4.ip_forward=1`); the installer, run as root, sets all of this up.
-Without them the modes run as single servers and the log says why.
+Only the main server speaks to the backend for the box. The servers of a pair never register, poll or
+report on their own; the main one reports a paired mode as running, with its active server's players,
+and carries out the backend's commands for it: a restart restarts the active server, and switching the mode
+off or on goes into `modes.json`. Server kit updates install into the server folder as usual; a running
+server keeps the files it has open. The waiting server of a pair is restarted to start on the new kit (one
+at a time on the box), and the active one takes it at its next start, after its match - so a pair moves to
+a new kit within a match, without stopping one.
+
+The container watches every server of a pair from its own state - Server.dll's status file where it writes
+one, otherwise its log - not from the backend (both servers of a pair share one address and port, so the
+backend's view never belongs to one of them):
+
+- a start that came up with parts of the map missing, froze, stalled, or took longer than
+  `RV_SWAP_BOOT_LIMIT_SEC` (default 360) is restarted;
+- a server that hangs once it is up (its log silent for 2 minutes, or its process stopped) is restarted;
+- the active server swaps out when its match ends, when it crashes (the process ends or Server.dll logs
+  `[FATAL]`; errors that Server.dll catches and survives do not count), when a match runs longer than
+  30 minutes, or when it logs a flood of caught errors (300 a minute for 3 minutes).
+
+If the waiting server is not ready at that moment, the active one restarts. A waiting server has a whole
+match to come back up.
 
 ## Ports
 
@@ -490,10 +469,9 @@ Without them the modes run as single servers and the log says why.
 | Duos | 7779/udp |
 | Trios | 7780/udp |
 | Squads | 7781/udp |
-| Zero Wait spares (kit 2026.10.10.1+) | the mode's port + 100: 7877, 7879, 7880, 7881/udp |
 | Linux web admin page | 8080/tcp (only for you) |
 
-Only the modes you run need their port, and a spare's port only with Zero Wait on for that mode. Community servers must be reachable from the internet on these
+Only the modes you run need their port. Community servers must be reachable from the internet on these
 ports; open them in your provider's firewall too.
 
 ---
