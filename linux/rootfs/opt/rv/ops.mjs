@@ -12,7 +12,8 @@ import { DATA, INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, rea
 
 export const CONTROL_SOCK = join(STATE_DIR, 'control.sock');
 
-// Settings shown per mode. Other keys found in these sections are listed too, with their raw name.
+// Settings shown per mode: the server kit's own list (settingInfo below) plus these. Other keys found in
+// these sections are listed too, with their raw name.
 export const SETTING_INFO = {
     'Game Settings/SpawnBot': { label: 'Bots per match', type: 'int', min: 0, max: 60 },
     'Game Settings/WaitingCountdown': { label: 'Barge countdown (seconds)', type: 'int', min: 0, max: 600 },
@@ -27,8 +28,55 @@ export const SETTING_INFO = {
     'Game Settings/OutfitCheck': { label: 'Remove invisible players', type: 'bool' },
     'Game Settings/OutfitGraceSec': { label: 'Invisible player grace (seconds)', type: 'int', min: 0, max: 600 },
     'Game Settings/KickNoClothing': { label: 'Remove players with no clothing', type: 'bool' },
-    'Game Settings/HeldItemFix': { label: 'Held item fix (clears items stuck in a player\'s hand)', type: 'bool' },
+    'Game Settings/HeldItemFix': { label: 'Held item fix (clears items stuck in a player\'s hand)', type: 'bool',
+        help: 'Finishes a stuck item swap and clears or drops an item left dangling in a hand. Off = only logged ([HELDITEM] ... would correct).' },
+    // Server.dll reads these too, but the kit's list does not offer them (texts from the Server.dll source).
+    'Game Settings/RoundEndRestartSec': { label: 'End-of-match screen (seconds)', type: 'int', min: 0, max: 120, brOnly: true,
+        help: 'How long a finished match stays on the end-of-match screen before the server restarts for the next one (server default 30). An empty server restarts at once.' },
+    'Game Settings/StormRingPlayers': { label: 'Storm sized for (players)', type: 'int', min: 0, max: 60, brOnly: true,
+        help: 'The storm is sized for this many players (server default 40, a full lobby). 0 = size it from the planned match (bots + players).' },
+    'Game Settings/MaxMatchPlayers': { label: 'Most players in a match (players + bots)', type: 'int', min: 2, max: 60, brOnly: true,
+        help: 'Retail lobbies were 40 (server default). Above that the game runs out of teams and puts strangers on one team.' },
+    'Game Settings/ServerMaxFPS': { label: 'Server frame cap (frames per second)', type: 'int', min: 0, max: 240,
+        help: 'Server default 30. 0 = uncapped: the server then runs flat out and repeats its replication work every frame.' },
+    'Game Settings/ReplicationBudgetMs': { label: 'Replication time budget per frame (ms)', type: 'int', min: 0, max: 100,
+        help: 'Server default 20. 0 = no budget.' },
+    'Game Settings/AdaptiveReplication': { label: 'Adaptive replication', type: 'bool',
+        help: 'Objects that do not change are sent less and less often, down to their minimum rate; characters keep full rate. Server default on.' },
+    'Game Settings/CharacterRateByDistance': { label: 'Send far characters less often', type: 'bool',
+        help: 'Characters within 80 m are sent every frame, 80-200 m every 2nd frame, beyond every 4th. Server default on.' },
+    'Game Settings/BotNavRadius': { label: 'Bot navigation radius (metres)', type: 'int', min: 0, max: 500,
+        help: 'With bot navigation on, paths are built this far around each bot (server default 60). 0 = no limit.' },
 };
+
+// The server kit's list of per-server settings (RVSupervisor/server-settings.js: the one the rVclient admin
+// panel and the Windows rV Modes app use), read again whenever a kit update changes it, so a setting a new
+// kit adds shows up here with its label, range and help without an image update. Only its array of plain
+// values is read.
+let kitList = { mtime: -1, list: [] };
+function kitSettings() {
+    const f = join(SUP_DIR, 'server-settings.js');
+    try {
+        const mtime = statSync(f).mtimeMs;
+        if (mtime !== kitList.mtime) {
+            const t = readFileSync(f, 'utf8'), a = t.indexOf('SERVER_SETTINGS = ['), b = t.indexOf('\n];', a);
+            const list = a < 0 || b < 0 ? [] : new Function(`return ${t.slice(a + 'SERVER_SETTINGS = '.length, b + 2)}`)();
+            kitList = { mtime, list: Array.isArray(list) ? list : [] };
+        }
+    } catch { kitList = { mtime: -1, list: [] }; }
+    return kitList.list;
+}
+export function settingInfo() {
+    const out = {};
+    for (const k of kitSettings()) {
+        if (!k || !/^\w+$/.test(k.key || '')) continue;
+        out[`Game Settings/${k.key}`] = k.type === 'bool'
+            ? { label: String(k.label || k.key), type: 'bool', help: String(k.help || ''), brOnly: !!k.brOnly }
+            : { label: String(k.label || k.key), type: 'int', min: Number(k.min) || 0, max: Number.isFinite(Number(k.max)) ? Number(k.max) : 100000, help: String(k.help || ''), brOnly: !!k.brOnly };
+    }
+    for (const [key, info] of Object.entries(SETTING_INFO)) if (!(key in out)) out[key] = info;
+    return out;
+}
 
 // Settings this image turns on for every mode. Written only where the key is not in the file yet, so
 // a value an operator set (also false) is kept.
@@ -184,12 +232,15 @@ function configFile(mode) {
 export function getSettings(mode) {
     const { m, file } = configFile(mode);
     const ini = readIni(file);
+    const info = settingInfo();
     const settings = Object.entries(ini)
         .filter(([k]) => EDITABLE_SECTIONS.includes(k.split('/')[0]) && !LOCKED.has(k))
-        .map(([k, v]) => ({ key: k, name: k.split('/')[1], value: v, ...(SETTING_INFO[k] || { label: k.split('/')[1], type: 'text' }) }));
+        .map(([k, v]) => ({ key: k, name: k.split('/')[1], value: v, ...(info[k] || { label: k.split('/')[1], type: 'text' }) }));
     // Known settings that this Config.<mode>.ini does not contain yet: shown as unset (server default).
-    for (const [k, info] of Object.entries(SETTING_INFO)) {
-        if (!(k in ini) && EDITABLE_SECTIONS.includes(k.split('/')[0])) settings.push({ key: k, name: k.split('/')[1], value: '', unset: true, ...info });
+    // Battle royale only ones (barge, cannon) are left out for Playground.
+    for (const [k, i] of Object.entries(info)) {
+        if (!(k in ini) && EDITABLE_SECTIONS.includes(k.split('/')[0]) && !(i.brOnly && m.key === 'playground'))
+            settings.push({ key: k, name: k.split('/')[1], value: '', unset: true, ...i });
     }
     return { mode: m.key, id: m.id, label: m.label, settings };
 }
@@ -198,13 +249,14 @@ export function getSettings(mode) {
 export async function saveSettings(mode, values, { restart = false } = {}) {
     const { m, file } = configFile(mode);
     const ini = readIni(file);
+    const infoAll = settingInfo();
     const bySection = {};
     for (const [rawKey, v] of Object.entries(values)) {
         const byName = keys => keys.find(x => x.toLowerCase().split('/')[1] === rawKey.toLowerCase() && EDITABLE_SECTIONS.includes(x.split('/')[0]));
-        const k = rawKey.includes('/') ? rawKey : byName(Object.keys(ini)) || byName(Object.keys(SETTING_INFO)) || rawKey;
-        const known = k in ini || k in SETTING_INFO;
+        const k = rawKey.includes('/') ? rawKey : byName(Object.keys(ini)) || byName(Object.keys(infoAll)) || rawKey;
+        const known = k in ini || k in infoAll;
         if (!known || LOCKED.has(k) || !EDITABLE_SECTIONS.includes(k.split('/')[0])) throw new Error(`${rawKey} cannot be changed here`);
-        const info = SETTING_INFO[k];
+        const info = infoAll[k];
         let val = String(v).trim();
         if (val === '' && !(k in ini)) continue;   // still unset: keep the server default
         if (info?.type === 'int') {

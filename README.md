@@ -264,6 +264,13 @@ sudo podman restart rvserver        # restart everything
 sudo podman stop rvserver           # stop (the game servers shut down cleanly)
 ```
 
+Settings: the web page and `rv settings` list the server kit's own settings (the ones the rVclient admin
+panel and the Windows rV Modes app offer, with their labels, ranges and help), read from the kit itself, so
+a setting a new kit adds shows up without an image update. Some more settings that Server.dll reads but the
+kit does not list are offered too (end-of-match screen time, storm size, frame cap, replication options,
+bot navigation radius, starting stats, held item fix), and any other key already in a `Config.<mode>.ini`
+section is shown with its raw name.
+
 Default settings: the container turns on **bot navigation** (`BotNavigation`) and the **held item fix**
 (`HeldItemFix`) in every mode's `Config.<mode>.ini` when it starts, but only where the setting is not in the
 file yet. A value you set yourself, also `false`, is kept: `rv set solo BotNavigation false`.

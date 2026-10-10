@@ -451,7 +451,8 @@ async function openSettings(mode) {
       ${s.type === 'bool'
         ? `<select id="st_${esc(s.key)}" data-key="${esc(s.key)}">${s.unset ? '<option value="" selected>(server default)</option>' : ''}
              <option value="true"${s.value === 'true' ? ' selected' : ''}>on</option><option value="false"${s.value === 'false' ? ' selected' : ''}>off</option></select>`
-        : `<input id="st_${esc(s.key)}" data-key="${esc(s.key)}" value="${esc(s.value)}"${s.unset ? ' placeholder="server default"' : ''} ${s.type === 'int' ? `type="number" min="${s.min}" max="${s.max}"` : ''}>`}`).join('')
+        : `<input id="st_${esc(s.key)}" data-key="${esc(s.key)}" value="${esc(s.value)}"${s.unset ? ' placeholder="server default"' : ''} ${s.type === 'int' ? `type="number" min="${s.min}" max="${s.max}"` : ''}>`}
+      ${s.help ? `<small class="muted st-help">${esc(s.help)}</small>` : ''}`).join('')
       || '<p class="muted">No editable settings in this config.</p>';
     $('stRestart').checked = false;
     $('dlgSettings').showModal();
