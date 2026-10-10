@@ -282,6 +282,8 @@ function setNice(pid, nice) {
     try { tids = fs.readdirSync(`/proc/${pid}/task`); } catch { return; }
     for (const t of tids) { try { if (os.getPriority(Number(t)) !== nice) os.setPriority(Number(t), nice); } catch { /* gone, or no rights */ } }
 }
+// Game processes this controller ended on purpose (a swap, a kit update, a health check): their exit is no crash.
+const endedOnPurpose = new Map();   // instance id -> time
 function procState(pid) { try { return /^State:\s+(\S)/m.exec(fs.readFileSync(`/proc/${pid}/status`, 'utf8'))?.[1] || ''; } catch { return ''; } }
 
 function createWatch(sv, log) {
@@ -316,6 +318,7 @@ function createWatch(sv, log) {
             const pid = gamePid(sv);
             if (!pid) return;
             log(`[pairs] ${sv.name}: ${why} - restarting it`);
+            endedOnPurpose.set(sv.id, Date.now());
             try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
         },
         // A start that came up with parts of the map missing, froze, stalled or takes too long.
@@ -380,8 +383,10 @@ function runServer(sv, log, delayMs) {
             proc.child = null;
             if (proc.stopping) return;
             if (Date.now() - proc.startedAt > 5 * 60 * 1000) proc.crashes = 0;   // it ran a while: a fresh count
-            const delay = code === 0 ? 0 : CRASH_BACKOFF_SEC[Math.min(proc.crashes++, CRASH_BACKOFF_SEC.length - 1)];
-            log(`[pairs] ${sv.name}: ${code === 0 ? 'exited (match end)' : `ended (${code ?? sig})`} - starting again${delay ? ` in ${delay}s` : ''}`);
+            const onPurpose = Date.now() - (endedOnPurpose.get(sv.id) || 0) < 15000;
+            endedOnPurpose.delete(sv.id);
+            const delay = code === 0 || onPurpose ? 0 : CRASH_BACKOFF_SEC[Math.min(proc.crashes++, CRASH_BACKOFF_SEC.length - 1)];
+            log(`[pairs] ${sv.name}: ${code === 0 ? 'exited (match end)' : onPurpose ? 'ended (restart)' : `ended (${code ?? sig})`} - starting again${delay ? ` in ${delay}s` : ''}`);
             proc.timer = setTimeout(start, delay * 1000);
         });
     };
