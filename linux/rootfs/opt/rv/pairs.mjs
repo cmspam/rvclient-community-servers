@@ -223,7 +223,9 @@ function prepareNet(sv) {
 }
 
 // All pairs' forwarding in one table: outbound NAT for the active servers, the game ports forwarded
-// statelessly to them, the waiting servers cut off.
+// statelessly to them, the waiting servers cut off. A waiting server's own connections are refused at once
+// (TCP reset, ICMP port unreachable), not dropped: with dropped packets the game's REST library (cpprest,
+// early in the start) waited for its connections to time out and then ended the process with a fatal error.
 export function rules(pairs, active, addr, dev) {
     const all = pairs.flatMap(p => SIDES.map(s => p[s].ip));
     const lines = [];
@@ -246,7 +248,7 @@ ${lines.map(l => `        ${l.dnat}`).join('\n')}
     }
     chain rv_forward {
         type filter hook forward priority -10; policy accept;
-${lines.map(l => `        ip saddr ${l.off} drop\n        ip daddr ${l.off} drop`).join('\n')}
+${lines.map(l => `        ip saddr ${l.off} meta l4proto tcp reject with tcp reset\n        ip saddr ${l.off} reject\n        ip daddr ${l.off} drop`).join('\n')}
         ip saddr { ${all.join(', ')} } accept
         ip daddr { ${all.join(', ')} } ct state established,related accept
     }
