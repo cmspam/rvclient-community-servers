@@ -2,7 +2,7 @@
 //
 // Same steps, same backend calls and the same file rules as the Windows script:
 //   1. game files from the user's zip (client-only files dropped)
-//   2. public IP and region (region by TCP ping to GameLift, as the game and setup do)
+//   2. public IP and region (region by TCP ping to each region's endpoint, as the game and setup do)
 //   3. sign-up with the backend: private (setup code) or community (contact) - or an existing node
 //   4. server kit downloaded THROUGH the backend, every file SHA-256 checked
 //   5. configs written by the kit's own setup-box.mjs
@@ -23,7 +23,13 @@ import { DATA, SERVER, WIN64, SUP_DIR, LOGS, SETUP_LOG, GAME_EXE, DEFAULT_BACKEN
 export const REGIONS = {
     'us-east-1': 'USA East', 'us-west-1': 'USA West', 'eu-central-1': 'Europe', 'sa-east-1': 'South America',
     'ap-northeast-1': 'Asia (Tokyo)', 'ap-south-1': 'India', 'ap-southeast-1': 'Asia (Singapore)', 'ap-southeast-2': 'Oceania',
+    'me-central-1': 'Middle East', 'us-central': 'USA Central',
 };
+
+// Middle East and USA Central have no GameLift endpoint. They are measured at the host the backend
+// gives launchers for them, the same pair the server kit's node agent pings.
+const REGION_PING_HOSTS = { 'me-central-1': 'ec2.me-central-1.amazonaws.com', 'us-central': 'tx-us-ping.vultr.com' };
+const regionPingHost = r => REGION_PING_HOSTS[r] || `gamelift.${r}.amazonaws.com`;
 
 // Files the Windows setup removes after unpacking a game zip: someone else's configs, secrets and
 // supervisor state, logs and dumps, and the player mod (a server does not use it).
@@ -79,13 +85,13 @@ function tcpPing(host, port = 443, timeoutMs = 2500) {
     });
 }
 
-// Same measurement as the Windows setup: the TCP connect time to each region's GameLift endpoint.
+// Same measurement as the Windows setup: the TCP connect time to each region's endpoint.
 export async function measureRegions() {
     const out = {};
     await Promise.all(Object.keys(REGIONS).map(async r => {
         let best = null;
         for (let i = 0; i < 3; i++) {
-            const ms = await tcpPing(`gamelift.${r}.amazonaws.com`);
+            const ms = await tcpPing(regionPingHost(r));
             if (ms != null && (best == null || ms < best)) best = ms;
         }
         out[r] = best == null ? null : Math.max(1, Math.round(best));
