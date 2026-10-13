@@ -11,7 +11,7 @@
 #
 # Every question can be answered in advance through an environment variable (RV_GAME_ZIP,
 # RV_DATA_DIR, RV_EDITION=community|private, RV_SETUP_CODE, RV_CONTACT, RV_NAME, RV_PUBLIC_IP,
-# RV_MODES=solo,duos,..., RV_SWAP=solo,... (Zero Wait), RV_SLIM=on|off, RV_KSM=on|off, RV_WEBUI=on|off).
+# RV_MODES=solo,duos,..., RV_SWAP=solo,... (Zero Wait), RV_KSM=on|off, RV_WEBUI=on|off).
 # With RV_UNATTENDED=1 it never asks: unanswered questions take the suggested answer.
 set -euo pipefail
 
@@ -132,12 +132,6 @@ ALREADY=0
 [ -f "$DATA/state/rv.json" ] && grep -q '"nodeId": "node-' "$DATA/state/rv.json" 2>/dev/null && ALREADY=1
 
 ENV_ARGS=()
-# ---------------------------------------------------------------- RAM saving
-bold "4. RAM saving"
-info "The game server keeps graphics and sound data it never uses. RAM saving frees it, so each"
-info "mode needs about 2.5 GB instead of 3.9 GB. It changes nothing for players."
-USE_SLIM=1; yesno "Switch RAM saving on? (recommended)" "y" "$(onoff "${RV_SLIM:-}")" || USE_SLIM=0
-echo
 
 # ---------------------------------------------------------------- server kind
 if [ "$ALREADY" = 1 ]; then
@@ -184,10 +178,10 @@ else
 
     # ------------------------------------------------------------ modes
     bold "7. Which game modes?"
-    # Per mode about 3.9 GB, or 2.5 GB with RAM saving (2.9 GB while it loads); with memory
-    # sharing (KSM) each further mode needs about 1.8 GB either way.
+    # Per mode about 2.9 GB while it loads, 2.5 GB after (the server kit's Server.dll frees the
+    # data a server never uses); with memory sharing (KSM) each further mode needs about 1.8 GB either way.
     USABLE=$(( MEM_MB - 900 ))
-    if [ "$USE_SLIM" = 1 ]; then FIRST=2900; EACH=2500; else FIRST=3900; EACH=3900; fi
+    FIRST=2900; EACH=2500
     FIT_PLAIN=$(( 1 + (USABLE - FIRST) / EACH )); [ "$USABLE" -lt "$FIRST" ] && FIT_PLAIN=1
     FIT_KSM=$FIT_PLAIN
     if [ "$KSM_KERNEL" = 1 ] && [ "$IS_ROOT" = 1 ] && [ "$USABLE" -ge "$FIRST" ]; then
@@ -308,7 +302,6 @@ fi
 # ---------------------------------------------------------------- start
 bold "11. Starting the server"
 [ "$USE_KSM" = 1 ] && ENV_ARGS+=(RV_KSM=on)
-[ "$USE_SLIM" = 0 ] && ENV_ARGS+=(RV_SLIM=off)
 [ "$USE_WEB" = 0 ] && ENV_ARGS+=(RV_WEBUI=off)
 [ "$WEB_PORT" != 8080 ] && ENV_ARGS+=(RV_WEBUI_PORT="$WEB_PORT")
 

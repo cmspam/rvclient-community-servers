@@ -123,13 +123,13 @@ export function startWebUi({ manager, setupJob, startSetup, port = 8080, host = 
             }
             if (route === 'GET /api/setup/detect') {
                 const [ip, pings] = await Promise.all([detectPublicIp(), measureRegions()]);
-                // How many modes fit: about 3.9 GB per mode, or 2.5 GB with RAM saving (RV_SLIM, 2.9 GB for
-                // the first while it loads); about 1.8 GB for each further one with memory sharing (RV_KSM=on);
-                // about 0.9 GB kept for everything else.
+                // How many modes fit: about 2.9 GB for the first mode while it loads, 2.5 GB for each
+                // further one (the server kit's Server.dll frees the data a server never uses); about
+                // 1.8 GB for each further one with memory sharing (RV_KSM=on); about 0.9 GB kept for
+                // everything else.
                 const memMb = ops.system().memTotalMb || 0, usable = memMb - 900;
                 const ksm = /^(1|on|yes|true)$/i.test(process.env.RV_KSM || '');
-                const { SLIM: slim } = await import('../slim.mjs');
-                const first = slim ? 2900 : 3900, each = ksm ? 1800 : slim ? 2500 : 3900;
+                const first = 2900, each = ksm ? 1800 : 2500;
                 const fit = Math.max(1, Math.min(5, 1 + Math.floor((usable - first) / each)));
                 return send(200, { success: true, publicIp: ip, pings, regions: REGIONS, modes: MODES, memMb, ksm, fit });
             }

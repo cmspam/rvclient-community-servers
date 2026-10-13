@@ -21,8 +21,6 @@ import { basename, dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
 import { readState, readJson, MODES, DATA, INSTANCES, SUP_DIR } from './lib.mjs';
-import { applySlim } from './slim.mjs';
-import { applyBots } from './bots.mjs';
 import { applyAddons } from './addons.mjs';
 import { lowPriorityPrefix, normalPriorityWhenJoinable } from './bootnice.mjs';
 
@@ -38,8 +36,6 @@ function viaWine(fn) {
     return function (cmd, args, ...rest) {
         if (!isExe(cmd)) return fn.call(this, cmd, args, ...rest);
         if (!Array.isArray(args)) { rest.unshift(args); args = []; }
-        applySlim(cmd);
-        applyBots(cmd);
         applyAddons(cmd);
         // nice 19 until joinable (bootnice.mjs), then rv-ksm (RV_KSM), then Wine.
         const run = [...lowPriorityPrefix(), ...(KSM ? ['rv-ksm'] : []), WINE, cmd, ...args];
