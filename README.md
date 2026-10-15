@@ -225,8 +225,10 @@ Open `http://YOUR-SERVER-IP:8080`. It has the same controls as the Windows rV Mo
 - your server as the rVclient backend sees it: review status, server kit version, update and roll back
 - each mode: on/off, state, players, uptime, memory, restart, stop, start
 - per-mode settings: bots per match, barge countdown, empty-match restart, starting stats, and the same
-  switches as the Windows rV Modes app: bot navigation, removing invisible players (and its grace time),
-  removing players with no clothing; also the held item fix
+  switches as the Windows rV Modes app: the better bots (hunting and fighting, hunt range, dodge chance,
+  climbing), removing invisible players (and its grace time), removing players with no clothing; also the
+  held item fix and the rest of the bots' switches (water guard, rescue, loot errands, cannon aim,
+  springboards, log lines)
 - restart all modes, stop or start all servers
 - logs
 
@@ -253,7 +255,7 @@ sudo podman exec rvserver rv mode duos on            # switch a mode on or off
 sudo podman exec rvserver rv restart solo            # restart / stop / start one mode
 sudo podman exec rvserver rv settings solo           # show a mode's settings
 sudo podman exec rvserver rv set solo SpawnBot 40    # change one (add --restart to apply now)
-sudo podman exec rvserver rv set solo BotNavigation true   # on/off settings take true or false
+sudo podman exec rvserver rv set solo SweatyBots true       # on/off settings take true or false
 sudo podman exec rvserver rv update                  # install the newest server kit
 sudo podman exec rvserver rv logs solo 100           # last lines of a log
 sudo podman exec rvserver rv leave                   # remove from the server list (before deleting)
@@ -272,12 +274,14 @@ Settings: the web page and `rv settings` list the server kit's own settings (the
 panel and the Windows rV Modes app offer, with their labels, ranges and help), read from the kit itself, so
 a setting a new kit adds shows up without an image update. Some more settings that Server.dll reads but the
 kit does not list are offered too (end-of-match screen time, storm size, frame cap, replication options,
-bot navigation radius, starting stats, held item fix), and any other key already in a `Config.<mode>.ini`
-section is shown with its raw name.
+starting stats, held item fix, and the better bots' own switches below), and any other key already in a
+`Config.<mode>.ini` section is shown with its raw name.
 
-Default settings: the container turns on **bot navigation** (`BotNavigation`) and the **held item fix**
+Default settings: the container turns on **the better bots** (`SweatyBots`) and the **held item fix**
 (`HeldItemFix`) in every mode's `Config.<mode>.ini` when it starts, but only where the setting is not in the
-file yet. A value you set yourself, also `false`, is kept: `rv set solo BotNavigation false`.
+file yet. A value you set yourself, also `false`, is kept: `rv set solo SweatyBots false`. On kit
+2026.10.14.1 and newer the old `BotNavigation` line is not read any more (the kit itself uses SweatyBots);
+a line left in a config from before can be deleted by hand.
 
 Updates: the container checks for a newer server kit (the game server software) 5 minutes after it
 starts and then every 15 minutes, and installs it through the kit's own updater, the same as `rv update`.
@@ -427,6 +431,23 @@ capabilities `NET_ADMIN SYS_ADMIN SYS_RESOURCE`, `SecurityLabelDisable=true` (Do
 `--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --security-opt apparmor=unconfined`) and
 IP forwarding on the host (`net.ipv4.ip_forward=1`); the installer, run as root, sets all of this up.
 Without them the modes run as single servers and the log says why.
+
+## Better bots (SweatyBots)
+
+Server kit **2026.10.14.1 and newer** ships SweatyBots, the new bot brain by MCha, and no longer has the old
+`BotNavigation`. The bots stop being limited to flat ground: the walkable ground is built once for the play
+area before the match instead of around every bot as it moves, and the bots loot, hunt, climb walls and
+buildings, follow a player onto the roofs, use the springboards, and keep out of deep water and the storm.
+A bot is only ever moved when no real player is within 50 m, so nobody sees one teleport.
+
+It is on by default, and off (`SweatyBots=false`) gives the plain game bots. The web page and
+`rv settings <mode>` offer five of its switches with the kit's own texts: `SweatyBots` (the whole thing),
+`SweatyBotsFight`, `SweatyBotsHuntRangeM`, `SweatyBotsDodgeChance` and `SweatyBotsClimb`. This image adds
+the rest of the feature switches, for turning one part off without turning the bots off:
+`SweatyBotsSafety` (the water guard and the water rescue), `SweatyBotsRescue` (a stuck bot, or one left
+outside the ring), `SweatyBotsErrands` (climbing to a rooftop's rare boxes when a bot has nothing to do),
+`SweatyBotsLaunchAim` (the cannon aims each bot at loot), `SweatyBotsBouncers` (the springboards) and
+`SweatyBotsProbe` (the bots' own evidence lines in the log).
 
 ## Ports
 

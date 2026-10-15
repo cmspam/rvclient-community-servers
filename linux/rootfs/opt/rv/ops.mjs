@@ -25,7 +25,8 @@ export const SETTING_INFO = {
     'Player Settings/StartingLegsValue': { label: 'Starting Legs stat', type: 'int', min: 0, max: 100 },
     // The same switches the Windows rV Modes app offers. Server.dll reads them from [Game Settings];
     // a key that is not in the file yet uses the server's built-in default until it is set here.
-    'Game Settings/BotNavigation': { label: 'Bot navigation (bots find real paths; small extra CPU)', type: 'bool' },
+    // BotNavigation is not here: kit 2026.10.14.1+ removed it and replaced it with SweatyBots, which
+    // the kit's own list offers (master switch, fight, hunt range, dodge, climbing) - see below.
     'Game Settings/OutfitCheck': { label: 'Remove invisible players', type: 'bool' },
     'Game Settings/OutfitGraceSec': { label: 'Invisible player grace (seconds)', type: 'int', min: 0, max: 600 },
     'Game Settings/KickNoClothing': { label: 'Remove players with no clothing', type: 'bool' },
@@ -46,8 +47,20 @@ export const SETTING_INFO = {
         help: 'Objects that do not change are sent less and less often, down to their minimum rate; characters keep full rate. Server default on.' },
     'Game Settings/CharacterRateByDistance': { label: 'Send far characters less often', type: 'bool',
         help: 'Characters within 80 m are sent every frame, 80-200 m every 2nd frame, beyond every 4th. Server default on.' },
-    'Game Settings/BotNavRadius': { label: 'Bot navigation radius (metres)', type: 'int', min: 0, max: 500,
-        help: 'With bot navigation on, paths are built this far around each bot (server default 60). 0 = no limit.' },
+    // The rest of SweatyBots (the kit's list offers the master switch, fight, hunt range, dodge and
+    // climbing). One part of the bots can be turned off here without turning them all off.
+    'Game Settings/SweatyBotsSafety': { label: 'Better bots: water guard and rescue', type: 'bool', brOnly: true,
+        help: 'A bot is kept out of water deep enough to kill it, and taken out of it when it ends up there. Shallow water stays walkable.' },
+    'Game Settings/SweatyBotsRescue': { label: 'Better bots: stuck and ring-out rescue', type: 'bool', brOnly: true,
+        help: 'A bot stuck on the map, or left outside the ring, is walked back or moved. A bot is never moved while a real player is within 50 m.' },
+    'Game Settings/SweatyBotsErrands': { label: 'Better bots: loot errands', type: 'bool', brOnly: true,
+        help: 'A bot with nothing to do climbs to the rare boxes on a roof near it, or up after the one it is fighting.' },
+    'Game Settings/SweatyBotsLaunchAim': { label: 'Better bots: the cannon aims at loot', type: 'bool', brOnly: true,
+        help: 'Each bot is thrown at a loot place inside the ring instead of wherever the cannon would send it.' },
+    'Game Settings/SweatyBotsBouncers': { label: 'Better bots: springboards', type: 'bool', brOnly: true,
+        help: 'Bots use the springboards: up to high places, across the water, after a player who bounced, and to elbow drop.' },
+    'Game Settings/SweatyBotsProbe': { label: 'Better bots: evidence lines in the log', type: 'bool', brOnly: true,
+        help: 'The bots report what they are doing every 30 s ([SWEATYBOTS] lines). Cheap; off is a quieter log.' },
 };
 
 // The server kit's list of per-server settings (RVSupervisor/server-settings.js: the one the rVclient admin
@@ -82,7 +95,7 @@ export function settingInfo() {
 // Settings this image turns on for every mode. Written only where the key is not in the file yet, so
 // a value an operator set (also false) is kept.
 export const SETTING_DEFAULTS = {
-    'Game Settings/BotNavigation': 'true',
+    'Game Settings/SweatyBots': 'true',
     'Game Settings/HeldItemFix': 'true',
 };
 
