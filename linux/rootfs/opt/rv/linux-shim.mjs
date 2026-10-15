@@ -13,6 +13,8 @@
 // file they have open; the next start loads the new one.
 //
 // Game servers start at the lowest CPU priority until they are joinable (bootnice.mjs).
+//
+// Each game server start is also watched until it is joinable (watchdog.mjs).
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -23,6 +25,7 @@ import { PassThrough } from 'node:stream';
 import { readState, readJson, MODES, DATA, INSTANCES, SUP_DIR } from './lib.mjs';
 import { applyAddons } from './addons.mjs';
 import { lowPriorityPrefix, normalPriorityWhenJoinable } from './bootnice.mjs';
+import { watchBoot } from './watchdog.mjs';
 
 const WINE = process.env.RV_WINE || 'wine';
 // RV_KSM=on: start through rv-ksm, which marks the game server's memory as mergeable, so the
@@ -40,7 +43,7 @@ function viaWine(fn) {
         // nice 19 until joinable (bootnice.mjs), then rv-ksm (RV_KSM), then Wine.
         const run = [...lowPriorityPrefix(), ...(KSM ? ['rv-ksm'] : []), WINE, cmd, ...args];
         const child = fn.call(this, run[0], run.slice(1), ...rest);
-        if (fn === originalSpawn) normalPriorityWhenJoinable(cmd, args, child);
+        if (fn === originalSpawn) { normalPriorityWhenJoinable(cmd, args, child); watchBoot(cmd, args, child); }
         return child;
     };
 }

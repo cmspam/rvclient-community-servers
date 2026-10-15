@@ -168,6 +168,9 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_IMAGE_UPDATE_MAX_HOURS` | restart for a new image after this many hours even with players on (default `6`) |
 | `RV_SWAP` | modes with Zero Wait at the first start, e.g. `solo,duos` (see [Zero Wait](#zero-wait-no-waiting-between-matches-linux)) |
 | `RV_BOOT_NICE` | `off` = game servers start at the normal CPU priority (default: lowest until joinable) |
+| `RV_BOOT_WATCHDOG` | `off` = do not end a game server start that froze or stalled (default `on`) |
+| `RV_BOOT_FROZEN_SEC` | a start whose process is stopped this long is ended and started again (default `15`) |
+| `RV_BOOT_STALL_SEC` | a start whose log gets no new lines for this long is ended and started again (default `150`) |
 | `RV_WARM_SPARE_MIN_FREE_MB` | free memory a Zero Wait spare needs to start (default 2500) |
 | `RV_NODE_ID`, `RV_NODE_KEY` | move an existing registration to this machine |
 
@@ -492,6 +495,10 @@ sudo rm -rf /srv/rvserver          # deletes the server's files and registration
 - **Private server: setup code refused.** Codes are valid for 30 minutes; get a new one in the launcher.
 - **Not enough memory.** Switch modes off (web page, `rv mode <mode> off`, or rV Modes on Windows), or use
   memory sharing on Linux.
+- **A mode stays "starting" for minutes.** The container watches every start until the kit reports the
+  server joinable: a process stopped for 15 s, or a log with no new lines for 150 s, is ended so the
+  supervisor starts it again (a start that hangs usually never finishes). `RV_BOOT_FROZEN_SEC` and
+  `RV_BOOT_STALL_SEC` change the two times, `RV_BOOT_WATCHDOG=off` turns the watching off.
 
 Questions? Ask in the rVclient Discord.
 
