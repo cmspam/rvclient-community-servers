@@ -60,7 +60,7 @@ const BOOT_LIMIT_MS = (Number(env.RV_SWAP_BOOT_LIMIT_SEC) || 360) * 1000;
 const STATS_SETTLE_MS = 3000;
 const ROUND_QUIET_MS = (Number(env.RV_SWAP_ROUND_END_QUIET_SEC) || 6) * 1000;   // no reports to send
 const UPLOAD_WAIT_MS = (Number(env.RV_SWAP_UPLOAD_WAIT_SEC) || 20) * 1000;      // the DLL's own flush limit
-const ROUND_END_MAX_MS = Math.max(30000, UPLOAD_WAIT_MS + 5000);
+const ROUND_END_MAX_MS = Math.max(45000, UPLOAD_WAIT_MS + 25000);               // handoff (15 s) + flush (20 s)
 const STUCK_MATCH_MS = 30 * 60 * 1000;   // like the supervisor's stuckMatchMin
 const FAULTS_PER_MIN = 300;              // like the supervisor's faultsPerMin, for 3 minutes
 const STUCK = new Set(['match running longer than any match', 'fault flood']);
@@ -68,19 +68,24 @@ const CRASH_BACKOFF_SEC = [10, 30, 60, 120];   // like the supervisor's crashBac
 const SIDES = ['a', 'b'];
 
 // Is the round-end wait over? Pure, so the upload timing can be tested with timestamps.
-//   c: { roundOverAt, roundOverPos, sentAt, sentPos, postedPos, endLabel }
+//   c: { roundOverAt, roundOverPos, sentAt, sentPos, postedPos, endLabel, lobbyReturnPos }
 // A posted line confirms the batch whose sent lines came after the round-over line. Without sent
 // lines there was nothing to upload (or it was already confirmed before the line), so the quiet
 // window ends the wait. Kits without the posted line keep the old settle after a sent line.
-export function endSettled(c, now, postedSupported) {
+// A "terminating for restart" end also waits for the [LOBBYRETURN] handoff or the process exit, so
+// connected players are not cut while Server.dll hands them back to the lobby.
+export function endSettled(c, now, postedSupported, processGone = false) {
     if (!c.roundOverAt) return '';
     const since = now - c.roundOverAt;
+    const cap = since >= ROUND_END_MAX_MS;
+    const handoff = c.endLabel !== 'match over' || c.lobbyReturnPos > c.roundOverPos || processGone;
+    if (!handoff && !cap) return '';
     const sentAfter = c.sentPos > c.roundOverPos ? c.sentPos : 0;
     const confirmed = sentAfter && c.postedPos > sentAfter;
     const quiet = !sentAfter && since >= ROUND_QUIET_MS;
     const oldKit = !postedSupported && sentAfter && now - c.sentAt >= STATS_SETTLE_MS;
     const uploadCap = sentAfter && now - c.sentAt >= UPLOAD_WAIT_MS;
-    if (since >= ROUND_END_DELAY_MS && (confirmed || quiet || oldKit || uploadCap || since >= ROUND_END_MAX_MS))
+    if (since >= ROUND_END_DELAY_MS && (confirmed || quiet || oldKit || uploadCap || cap))
         return c.endLabel || 'round over';
     return '';
 }
@@ -502,7 +507,7 @@ export function createPairs({ log = console.log } = {}) {
         const p = { mode, a: server(mode, 'a'), b: server(mode, 'b') };
         for (const sd of SIDES) { preparePrefix(p[sd], log); prepareNet(p[sd]); }
         if (!active[mode.key]) active[mode.key] = 'a';
-        const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, roundOverPos: 0, endLabel: '', sentAt: 0, sentPos: 0, postedPos: 0, goneSince: 0, wasUp: false };
+        const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, roundOverPos: 0, endLabel: '', sentAt: 0, sentPos: 0, postedPos: 0, lobbyReturnPos: 0, goneSince: 0, wasUp: false };
         running.set(mode.key, { p, ctl, procs: {} });
         apply();
         // the active server starts first; the waiting one a minute and a half later
@@ -581,7 +586,7 @@ export function createPairs({ log = console.log } = {}) {
                 const key = c.p.mode.key, act = active[key], sb = other(act), A = c.w[act], B = c.w[sb];
                 A.observe(); B.observe();
                 const f = c.p[act].trace, s = size(f);
-                if (s < c.off) { c.off = 0; c.roundOverPos = 0; c.sentPos = 0; c.postedPos = 0; }
+                if (s < c.off) { c.off = 0; c.roundOverPos = 0; c.sentPos = 0; c.postedPos = 0; c.lobbyReturnPos = 0; }
                 if (s > c.off) {
                     const from = c.off, text = readRange(f, from, s); c.off = s;
                     const at = m => from + m.index;
@@ -599,6 +604,8 @@ export function createPairs({ log = console.log } = {}) {
                     if (sent) { c.sentAt = Date.now(); c.sentPos = at(sent); }
                     const posted = [...text.matchAll(/\[STATS\] match reports posted:/g)].pop();
                     if (posted) { A.postedSupported = true; c.postedPos = at(posted); }
+                    const lobby = /\[LOBBYRETURN\]/.exec(text);
+                    if (lobby) c.lobbyReturnPos = at(lobby);
                 }
                 // Server.dll's status file, where it writes one: the flow state, without reading the trace.
                 const ls = liveStatus(c.p[act]);
@@ -611,7 +618,7 @@ export function createPairs({ log = console.log } = {}) {
                 // report that was already confirmed before the round-over line (the winner's), settles
                 // after the quiet window. Without the confirmation line (older kits), the old settle stays.
                 if (!c.waiting && c.roundOverAt) {
-                    const end = endSettled(c, Date.now(), A.postedSupported);
+                    const end = endSettled(c, Date.now(), A.postedSupported, !gamePid(c.p[act]));
                     if (end) c.waiting = end;
                 }
                 if (!c.waiting && c.wasUp) {
@@ -636,15 +643,15 @@ export function createPairs({ log = console.log } = {}) {
                     A.forget();
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - swapped: ${sb} is active, ${act} restarts and waits`);
                     if (STUCK.has(c.waiting)) A.kill(c.waiting);
-                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.sentAt = 0; c.sentPos = 0; c.postedPos = 0;
+                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.sentAt = 0; c.sentPos = 0; c.postedPos = 0; c.lobbyReturnPos = 0;
                     c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1; c.flow = null; c.faults = 0; c.floodMin = 0;
                 } else if (c.waiting === 'map incomplete') {
-                    A.checkHealth(); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = '';
+                    A.checkHealth(); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.lobbyReturnPos = 0;
                 } else if (STUCK.has(c.waiting)) {
-                    A.kill(`${c.waiting} (${sb} was not ready)`); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.flow = null; c.floodMin = 0;
+                    A.kill(`${c.waiting} (${sb} was not ready)`); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.lobbyReturnPos = 0; c.flow = null; c.floodMin = 0;
                 } else if (A.ready()) {
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - ${sb} was not ready; ${act} restarted and stays active`);
-                    c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.goneSince = 0; c.wasUp = true;
+                    c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.lobbyReturnPos = 0; c.goneSince = 0; c.wasUp = true;
                 }
             }
         }
