@@ -76,6 +76,11 @@ USE_NTSYNC=0
 if [ -e /dev/ntsync ]; then USE_NTSYNC=1
 elif [ "$IS_ROOT" = 1 ] && modprobe ntsync 2>/dev/null && [ -e /dev/ntsync ]; then USE_NTSYNC=1
 fi
+# AppArmor hosts (Ubuntu, Debian) put a profile on the container that refuses the mount that
+# "ip netns add" makes, so the server pairs cannot create their namespaces. The container runs
+# with apparmor=unconfined; SELinux hosts keep their label (SecurityLabelDisable covers it).
+USE_APPARMOR=0
+if [ -r /sys/module/apparmor/parameters/enabled ] && grep -qx Y /sys/module/apparmor/parameters/enabled; then USE_APPARMOR=1; fi
 if [ "$USE_NTSYNC" = 1 ] && [ "$IS_ROOT" = 1 ] && ! grep -qsx ntsync /etc/modules-load.d/*.conf; then
     mkdir -p /etc/modules-load.d && echo ntsync > /etc/modules-load.d/rvserver-ntsync.conf
 fi
@@ -356,6 +361,7 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         CAPS="SYS_RESOURCE"; [ "$IS_ROOT" = 1 ] && CAPS="SYS_RESOURCE NET_ADMIN SYS_ADMIN"
         [ -n "$CAPS" ] && echo "AddCapability=$CAPS"
         [ "$IS_ROOT" = 1 ] && echo "SecurityLabelDisable=true"
+        [ "$IS_ROOT" = 1 ] && [ "$USE_APPARMOR" = 1 ] && echo "SecurityOpt=apparmor=unconfined"
         [ "$USE_NTSYNC" = 1 ] && echo "AddDevice=/dev/ntsync"
         for e in "${ENV_ARGS[@]}"; do echo "Environment=\"$e\""; done
         echo
@@ -381,7 +387,7 @@ else
     ARGS=(--name "$NAME" --network host -v "$ZIP:/game.zip:ro,z" -v "$DATA:/data:Z")
     if [ "$IS_ROOT" = 1 ]; then
         ARGS+=(--cap-add SYS_RESOURCE --cap-add NET_ADMIN --cap-add SYS_ADMIN --security-opt label=disable)
-        [ "$ENGINE" = docker ] && ARGS+=(--security-opt apparmor=unconfined)
+        if [ "$ENGINE" = docker ] || [ "$USE_APPARMOR" = 1 ]; then ARGS+=(--security-opt apparmor=unconfined); fi
     else ARGS+=(--cap-add SYS_RESOURCE); fi
     [ "$USE_NTSYNC" = 1 ] && ARGS+=(--device /dev/ntsync)
     for e in "${ENV_ARGS[@]}"; do ARGS+=(-e "$e"); done
