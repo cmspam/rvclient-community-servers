@@ -15,6 +15,9 @@
 // Game servers start at the lowest CPU priority until they are joinable (bootnice.mjs).
 //
 // Each game server start is also watched until it is joinable (watchdog.mjs).
+//
+// Before each game start the engine config is written so the island loads once: the engine starts
+// on the small SheikEntry map with the battle royale mode, and Server.dll loads at 5 seconds.
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -35,11 +38,46 @@ const KSM = /^(1|on|yes|true)$/i.test(process.env.RV_KSM || '');
 const originalSpawn = childProcess.spawn;
 const isExe = cmd => typeof cmd === 'string' && /\.exe$/i.test(cmd);
 
+// The engine starts on the island by default and StartGameMode loads the island again. Starting it
+// on the small SheikEntry map with the battle royale mode removes the first island load. The game
+// writes Engine.ini on exit, so write the section before every game start. The same start sets the
+// Server.dll timer in DList.ini to 5 seconds instead of 14.
+function applyMapOnceConfig(cmd) {
+    const win64 = dirname(cmd);
+    const dlist = join(win64, 'DList.ini');
+    if (fs.existsSync(dlist)) {
+        const text = fs.readFileSync(dlist, 'utf8');
+        const slot = text.match(/^DLL(\d+)=Server\.dll\s*$/mi);
+        if (slot) {
+            const timer = new RegExp(`^Timer${slot[1]}=.*$`, 'mi');
+            if (timer.test(text)) fs.writeFileSync(dlist, text.replace(timer, `Timer${slot[1]}=5`));
+        }
+    }
+    const prefix = process.env.WINEPREFIX || '/data/wine';
+    const user = process.env.USER || 'root';
+    const dir = join(prefix, 'drive_c', 'users', user, 'AppData', 'Local', 'Rumbleverse', 'Saved', 'Config', 'WindowsClient');
+    const file = join(dir, 'Engine.ini');
+    fs.mkdirSync(dir, { recursive: true });
+    let text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
+    const section = /^\[\/Script\/EngineSettings\.GameMapsSettings\]\r?$/m.exec(text);
+    if (section) {
+        const start = section.index;
+        const after = start + section[0].length;
+        const next = text.slice(after).search(/^\[/m);
+        text = text.slice(0, start) + text.slice(next < 0 ? text.length : after + next);
+    }
+    text = text.trimEnd() + '\n\n[/Script/EngineSettings.GameMapsSettings]\n'
+        + 'GameDefaultMap=/Game/Maps/SheikEntry.SheikEntry\n'
+        + 'LocalMapOptions=?game=/Game/Blueprints/Modes/BattleRoyale/SheikGameModeBR_BP.SheikGameModeBR_BP_C\n';
+    fs.writeFileSync(file, text);
+}
+
 function viaWine(fn) {
     return function (cmd, args, ...rest) {
         if (!isExe(cmd)) return fn.call(this, cmd, args, ...rest);
         if (!Array.isArray(args)) { rest.unshift(args); args = []; }
         applyAddons(cmd);
+        try { applyMapOnceConfig(cmd); } catch (e) { console.error(`[map-once] ${e.message}`); }
         // nice 19 until joinable (bootnice.mjs), then rv-ksm (RV_KSM), then Wine.
         const run = [...lowPriorityPrefix(), ...(KSM ? ['rv-ksm'] : []), WINE, cmd, ...args];
         const child = fn.call(this, run[0], run.slice(1), ...rest);

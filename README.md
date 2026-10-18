@@ -60,6 +60,11 @@ barge countdown (gear button), restarts, review status and updates. More details
 The server runs in a container (Docker or Podman). The game server runs under Wine; the rVclient server
 software inside it is the official one and updates itself exactly as on Windows. No Windows is needed.
 
+Before every game start the container writes the engine config so the island loads once: the engine
+starts on the small SheikEntry map with the battle royale mode, and Server.dll loads at 5 seconds
+instead of 14. The game rewrites Engine.ini on exit, so the container writes the section again
+before the next start. This also applies to the server pairs.
+
 ### What you need
 
 - A 64-bit (x86_64) Linux VPS or server
