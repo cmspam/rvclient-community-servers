@@ -3,12 +3,12 @@
 # The image holds no game files and no server kit: you mount your own game zip, and the server kit
 # is downloaded through the rVclient backend with your server's own key, as on Windows.
 # Built from src/: rv-ksm, which opts the game servers into KSM memory sharing (RV_KSM=on).
-FROM public.ecr.aws/docker/library/alpine:latest AS build
+FROM mirror.gcr.io/library/alpine:latest AS build
 RUN apk add --no-cache build-base
 COPY src/ /src/
 RUN gcc -O2 -static -s -o /src/rv-ksm /src/rv-ksm.c
 
-FROM public.ecr.aws/docker/library/alpine:latest
+FROM mirror.gcr.io/library/alpine:latest
 
 LABEL org.opencontainers.image.title="Rumbleverse server (Linux/Wine)" \
       org.opencontainers.image.description="Rumbleverse community/private server under Wine, with a web admin UI"
