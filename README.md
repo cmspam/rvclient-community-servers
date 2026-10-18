@@ -29,7 +29,7 @@ Host your own Rumbleverse server with rVclient, on **Windows** or **Linux**.
 - RAM: about 3.5 to 4 GB for each mode you run (Playground alone is the lightest)
 - Disk: about 15 GB if setup copies your game files, about 1 GB if it links them
 - Private server: Tailscale or Radmin VPN on your PC and your friends' PCs, same network
-- Community server: a VPS or dedicated server, with **UDP 7777-7781** open in your provider's firewall (and 7877-7881 for Zero Wait)
+- Community server: a VPS or dedicated server, with **UDP 7777-7781** open in your provider's firewall (and 7877-7881 if you choose the warm spare method)
 
 ### Steps
 
@@ -66,7 +66,7 @@ software inside it is the official one and updates itself exactly as on Windows.
 - **Podman** or **Docker** (see step 1)
 - RAM: about 3 GB for one mode, about 2.5 GB for each further mode (1.8 GB with memory sharing)
 - Disk: about 25 GB free
-- A public IPv4 address; **UDP 7777-7781** reachable, and 7877-7881 for Zero Wait (also in your provider's firewall, if it has one)
+- A public IPv4 address; **UDP 7777-7781** reachable, and 7877-7881 with the warm spare method (also in your provider's firewall, if it has one)
 - Your Rumbleverse game zip (about 11 GB)
 
 ### Easiest way: from your own computer, onto a fresh VPS
@@ -112,9 +112,11 @@ It asks:
    *Server Status > My private servers > Set up a private server*)
 5. your **public IP** (detected for you, press Enter)
 6. which **modes** to run (it suggests how many fit in your RAM)
-7. which modes get **Zero Wait**, no waiting between matches (see
-   [Zero Wait](#zero-wait-no-waiting-between-matches-linux); about 2.5 GB more RAM per mode and its port + 100 open to players; it suggests
-   the modes that fit, empty for none, and it can be switched per mode later on the web page)
+7. which modes get **Zero Wait**, no waiting between matches, and which method it uses (see
+   [Zero Wait](#zero-wait-no-waiting-between-matches-linux); about 2.5 GB more RAM per mode. The
+   default method is server pairs; the warm spare method also needs the mode's port + 100 open to
+   players. It suggests the modes that fit, empty for none, and both the method and the modes can be
+   changed later on the web page)
 8. whether to switch on **memory sharing** (recommended with more than one mode)
 9. whether to turn on the **web admin page**
 
@@ -167,6 +169,10 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_IMAGE_UPDATE_HOURS` | hours between image checks (default `1`) |
 | `RV_IMAGE_UPDATE_MAX_HOURS` | restart for a new image after this many hours even with players on (default `6`) |
 | `RV_SWAP` | modes with Zero Wait at the first start, e.g. `solo,duos` (see [Zero Wait](#zero-wait-no-waiting-between-matches-linux)) |
+| `RV_ZEROWAIT` | `pairs` (default) or `spare`: the Zero Wait method at the first start |
+| `RV_ZEROWAIT_APPLY_MAX_MIN` | a method change waits this many minutes for every server to be empty (default `30`) |
+| `RV_SWAP_UPLOAD_WAIT_SEC` | server pairs: wait this long after the last match report was queued for the upload confirmation (default `20`) |
+| `RV_SWAP_ROUND_END_QUIET_SEC` | server pairs: swap this long after the round when no match reports are queued (default `6`) |
 | `RV_BOOT_NICE` | `off` = game servers start at the normal CPU priority (default: lowest until joinable) |
 | `RV_BOOT_WATCHDOG` | `off` = do not end a game server start that froze or stalled (default `on`) |
 | `RV_BOOT_FROZEN_SEC` | a start whose process is stopped this long is ended and started again (default `15`) |
@@ -399,41 +405,60 @@ Without ntsync the server works the same way, using Wine's older method.
 ## Zero Wait: no waiting between matches (Linux)
 
 A server needs a minute or more to start its next match. With Zero Wait, players queue straight into
-the next match instead: a second server of the mode is already started and waiting in its lobby.
+the next match instead: a second server of the mode keeps the next match ready.
 
-**Server kit 2026.10.10.2 and newer** have this built in as the **warm spare**, and the container uses it
-as it is. Each battle royale mode with Zero Wait gets a second server, `<mode>-spare`, on the mode's port
-+ 100 (Solos 7877, Duos 7879, Trios 7880, Squads 7881), with the same `Config.<mode>.ini`. Both are
-ordinary game servers: each reports to the backend with its own port, and matchmaking sends players to
-whichever one is in its lobby. While one plays a match or restarts after it, the other takes the next
-players. Nothing is switched at the network level. Playground has no matches, so it has no spare.
+There are two ways to do this. The whole server uses one method, chosen by its operator.
 
-- The spare's port must be open to players like the mode's own port (provider firewall, port forward).
-  The installer opens 7877-7881/udp in firewalld or ufw.
-- A spare only starts with 2.5 GB of free memory (`RV_WARM_SPARE_MIN_FREE_MB` changes this). Once
-  started, it restarts after its matches like any server.
-- Switch it per mode with the **Zero Wait** switch on the web admin page, `rv swap on <mode>` /
-  `rv swap off <mode>`, or the **Warm spare server** setting. They all set `WarmSpare=true` or `false` in
-  `Config.<mode>.ini`. Off: the spare closes after its current match.
-- When a container first starts on such a kit, the modes that had Zero Wait before (or are listed in
-  `RV_SWAP`) keep it, and the other battle royale modes get `WarmSpare=false`.
-- `rv swap status` and the web page show each mode's server and its spare (port, state, players).
-  `rv logs <mode>-spare` shows the spare's log.
+| Method | Ports | Who switches |
+|---|---|---|
+| **Server pairs** (default for this release) | the mode's own port | this container |
+| **Warm spare** | the mode's port and the mode's port + 100 | the server kit and the backend |
+
+**Server pairs** start two game servers of the mode on the mode's own port, each in its own network
+namespace. Only one of them is connected to the backend at a time; the container forwards the public
+UDP port to the active one. A few seconds after a round ends, once Server.dll confirms that the
+match reports reached the backend (`[STATS] match reports posted`), the container switches the port
+to the second server, and the first one restarts and waits. The backend sees one server per mode the
+whole time. This method needs `Network=host`, the capabilities `NET_ADMIN SYS_ADMIN SYS_RESOURCE`,
+`SecurityLabelDisable=true` (Docker: `--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE
+--security-opt apparmor=unconfined`), a default route, and IP forwarding on the host
+(`net.ipv4.ip_forward=1`). The installer, run as root, sets all of this up. If any of it is missing,
+the container uses the warm spare when the kit has it, and says so in the log and on the web page.
+
+**The warm spare** is the server kit's own method (kit 2026.10.10.1 and newer). Each battle royale
+mode gets a second server, `<mode>-spare`, on the mode's port + 100 (Solos 7877, Duos 7879, Trios
+7880, Squads 7881), with the same `Config.<mode>.ini`. Both are ordinary game servers: each reports
+to the backend with its own port, and matchmaking sends players to whichever one is in its lobby.
+Nothing is switched at the network level. The spare's port must be open to players like the mode's
+own port (provider firewall, port forward); the installer opens 7877-7881/udp. A spare only starts
+with 2.5 GB of free memory (`RV_WARM_SPARE_MIN_FREE_MB` changes this).
+
+### Choosing the method
+
+- On the web admin page, use the **Zero Wait method** selector; in a terminal use
+  `rv swap method pairs|spare`.
+- On a server's first start the method comes from `RV_ZEROWAIT=pairs|spare`. The default for this
+  release is `pairs`; it can change to `spare` in a later release.
+- A change applies when every game server is empty, or after 30 minutes at most
+  (`RV_ZEROWAIT_APPLY_MAX_MIN`). The page and `rv swap status` show when a change is pending. The
+  container restarts to apply it, so it needs a restart policy (`Restart=always`,
+  `--restart=unless-stopped`).
+- Per mode, the **Zero Wait** switch on the web page, or `rv swap on|off <mode>`, chooses which
+  battle royale modes have it. Playground has no matches to wait between and is not offered.
+- `rv swap status` shows the method and each mode's two servers. `rv logs <mode>-spare` shows a warm
+  spare's log.
+
+In the warm spare method, the kit's **Warm spare server** setting works as before and sets
+`WarmSpare` in `Config.<mode>.ini`. In the server pairs method that setting is hidden, because the
+pair controller owns the choice.
 
 Every game server, spare or not, starts at the lowest CPU priority (nice 19) and gets the normal
 priority once it is joinable, so that a server starting next to a match does not slow the match down.
 This needs the `SYS_RESOURCE` capability (the installer always adds it); `RV_BOOT_NICE=off` turns it off.
 
-When a running container's server kit updates itself to one with the warm spare, the container restarts
-once nobody is playing (or after `RV_IMAGE_UPDATE_MAX_HOURS`) and comes back with warm spares.
-
-**Server kits before 2026.10.10.2** have no warm spare. On those the container runs Zero Wait modes as
-server pairs instead: both servers use the mode's own port, the waiting one runs in a network namespace
-with no route out, and a few seconds after the round is over they swap. Pairs need `Network=host`, the
-capabilities `NET_ADMIN SYS_ADMIN SYS_RESOURCE`, `SecurityLabelDisable=true` (Docker:
-`--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --security-opt apparmor=unconfined`) and
-IP forwarding on the host (`net.ipv4.ip_forward=1`); the installer, run as root, sets all of this up.
-Without them the modes run as single servers and the log says why.
+Existing servers that ran warm spares switch to server pairs on the first start of this image and
+keep the modes they had chosen. A server that asks for the warm spare on an older kit runs server
+pairs until a kit update brings the warm spare.
 
 ## Better bots (SweatyBots)
 
@@ -449,8 +474,13 @@ It is on by default, and off (`SweatyBots=false`) gives the plain game bots. The
 the rest of the feature switches, for turning one part off without turning the bots off:
 `SweatyBotsSafety` (the water guard and the water rescue), `SweatyBotsRescue` (a stuck bot, or one left
 outside the ring), `SweatyBotsErrands` (climbing to a rooftop's rare boxes when a bot has nothing to do),
-`SweatyBotsLaunchAim` (the cannon aims each bot at loot), `SweatyBotsBouncers` (the springboards) and
-`SweatyBotsProbe` (the bots' own evidence lines in the log).
+`SweatyBotsLaunchAim` (the cannon aims each bot at loot), `SweatyBotsBouncers` (the springboards),
+`SweatyBotsNavGeom`, `SweatyBotsNavGeomInstanced`, `SweatyBotsNavLinks` and `SweatyBotsNavNoWater`
+(the walk mesh on buildings, rocks, roof edges and out of the water), `SweatyBotsOwnInvoker` (mesh
+around a bot outside the ring), `SweatyBotsClimbStopPath` (the earlier climb behavior) and
+`SweatyBotsProbe` (the bots' own evidence lines in the log). The two build-job counts,
+`SweatyBotsNavJobs` and `SweatyBotsNavJobsBuild`, are there for a small VPS: a large value hitches a
+2-core host.
 
 ## Ports
 
@@ -461,10 +491,10 @@ outside the ring), `SweatyBotsErrands` (climbing to a rooftop's rare boxes when 
 | Duos | 7779/udp |
 | Trios | 7780/udp |
 | Squads | 7781/udp |
-| Zero Wait spares (kit 2026.10.10.2+) | the mode's port + 100: 7877, 7879, 7880, 7881/udp |
+| Zero Wait warm spare method (kit 2026.10.10.2+) | the mode's port + 100: 7877, 7879, 7880, 7881/udp |
 | Linux web admin page | 8080/tcp (only for you) |
 
-Only the modes you run need their port, and a spare's port only with Zero Wait on for that mode. Community servers must be reachable from the internet on these
+Only the modes you run need their port, and a spare's port only with the warm spare method and Zero Wait on for that mode. Community servers must be reachable from the internet on these
 ports; open them in your provider's firewall too.
 
 ---

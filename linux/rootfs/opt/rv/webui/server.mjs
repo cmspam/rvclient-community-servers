@@ -27,7 +27,7 @@ function readBody(req) {
     });
 }
 
-export function startWebUi({ manager, setupJob, startSetup, port = 8080, host = '0.0.0.0', log = console.log }) {
+export function startWebUi({ manager, actions, setupJob, startSetup, port = 8080, host = '0.0.0.0', log = console.log }) {
     const server = http.createServer(async (req, res) => {
         const url = new URL(req.url, 'http://x');
         const ip = req.socket.remoteAddress || '';
@@ -96,6 +96,10 @@ export function startWebUi({ manager, setupJob, startSetup, port = 8080, host = 
                 const { mode, on } = await readBody(req);
                 return send(200, { success: true, message: ops.setPair(mode, on === true) });
             }
+            if (route === 'POST /api/zerowait') {
+                const { method } = await readBody(req);
+                return send(200, { success: true, message: ops.setZeroWaitMethod(method) });
+            }
             if (route === 'POST /api/modes') {
                 const { mode, on } = await readBody(req);
                 return send(200, { success: true, message: ops.setMode(mode, on === true) });
@@ -109,7 +113,8 @@ export function startWebUi({ manager, setupJob, startSetup, port = 8080, host = 
             const pm = url.pathname.match(/^\/api\/supervisor\/(start|stop|restart)$/);
             if (pm && req.method === 'POST') {
                 if (!isConfigured()) return fail(400, 'Finish the setup first.');
-                manager[pm[1]]().catch(e => log(`[rv] supervisor ${pm[1]} failed: ${e.message}`));
+                const sup = actions || manager;
+                sup[pm[1]]().catch(e => log(`[rv] supervisor ${pm[1]} failed: ${e.message}`));
                 return send(200, { success: true });
             }
             if (route === 'GET /api/logs') {

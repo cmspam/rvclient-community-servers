@@ -22,7 +22,7 @@ import https from 'node:https';
 import { basename, dirname, join } from 'node:path';
 import { syncBuiltinESMExports } from 'node:module';
 import { PassThrough } from 'node:stream';
-import { readState, readJson, MODES, DATA, INSTANCES, SUP_DIR } from './lib.mjs';
+import { readState, readJson, writeJson, MODES, DATA, INSTANCES, SUP_DIR } from './lib.mjs';
 import { applyAddons } from './addons.mjs';
 import { lowPriorityPrefix, normalPriorityWhenJoinable } from './bootnice.mjs';
 import { watchBoot } from './watchdog.mjs';
@@ -147,7 +147,7 @@ async function takeCommand(cmd, paired) {
     if (cmd.type === 'mode' && m && mainUsesSplitModes()) {
         const f = join(SUP_DIR, 'modes.json'), obj = readJson(f, {});
         obj[m.key] = cmd.on === true;
-        fs.writeFileSync(f, JSON.stringify(obj, null, 2) + '\n');
+        writeJson(f, obj, 0o644);
         return `mode "${m.key}" switched ${cmd.on ? 'ON' : 'OFF'} in the modes file`;
     }
     return null;

@@ -2,13 +2,14 @@
 //
 // Everything goes through the places the Windows "rV Modes (server)" app uses: the supervisor's
 // local admin API, modes.json (modes on/off) and Config.<mode>.ini (game settings).
-import { pairStatus, restartActive, pairsAvailable, swapModes, setSwapMode } from './pairs.mjs';
-import { kitHasWarmSpare, isSpare, warmSpareModes, setWarmSpare, SPARE_PORT_OFFSET } from './warmspare.mjs';
-import { existsSync, statSync, openSync, readSync, closeSync, writeFileSync, readFileSync, statfsSync } from 'node:fs';
+import { pairStatus, restartActive, swapModes, setSwapMode } from './pairs.mjs';
+import { isSpare, warmSpareModes, setWarmSpare, selectedSpareModes, SPARE_PORT_OFFSET } from './warmspare.mjs';
+import { requestedMethod, activePlan, setMethod } from './zerowait.mjs';
+import { existsSync, statSync, openSync, readSync, closeSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
-import { DATA, INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, readJson, readState, updateState, isConfigured, kitVersion,
+import { DATA, INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, readJson, writeJson, readState, updateState, isConfigured, kitVersion,
     readIni, setIniValues, gameProcesses } from './lib.mjs';
 
 export const CONTROL_SOCK = join(STATE_DIR, 'control.sock');
@@ -32,6 +33,16 @@ export const SETTING_INFO = {
     'Game Settings/KickNoClothing': { label: 'Remove players with no clothing', type: 'bool' },
     'Game Settings/HeldItemFix': { label: 'Held item fix (clears items stuck in a player\'s hand)', type: 'bool',
         help: 'Finishes a stuck item swap and clears or drops an item left dangling in a hand. Off = only logged ([HELDITEM] ... would correct).' },
+    'Game Settings/RewakeHeldProps': { label: 'Wake held props (old behavior)', type: 'bool',
+        help: 'The old way of waking up props every second. Off since 2026-10-12: it is the suspected cause of a held shield\'s block restarting. Leave off.' },
+    'Game Settings/PopcornGuard': { label: 'Popcorn heal guard', type: 'bool',
+        help: 'Ends a popcorn grenade heal left on a character after the healing area is gone ("infinite health", an infinity sign). Server default on.' },
+    'Game Settings/BlockWatch': { label: 'Shield block watch (log only)', type: 'bool',
+        help: 'Logs [BLOCKWATCH] while a held shield\'s block keeps restarting (the "shield animation repeats, no stamina" report). No gameplay change.' },
+    'Game Settings/LiveView': { label: 'Admin panel Live view', type: 'bool',
+        help: 'Lets the admin panel show this server in Live view and send moderator commands. Private servers (RequireMatchmadeJoin=false) are always off.' },
+    'Game Settings/CharacterViewDistance': { label: 'Character view distance (metres, 0 = off)', type: 'int', min: 0, max: 5000,
+        help: 'Anti-wallhack: send another player\'s character only within this many metres. Leave at 0: turning it on has left characters invisible in live tests, until reopening their channel is fixed.' },
     // Server.dll reads these too, but the kit's list does not offer them (texts from the Server.dll source).
     'Game Settings/RoundEndRestartSec': { label: 'End-of-match screen (seconds)', type: 'int', min: 0, max: 120, brOnly: true,
         help: 'How long a finished match stays on the end-of-match screen before the server restarts for the next one (server default 30). An empty server restarts at once.' },
@@ -59,6 +70,22 @@ export const SETTING_INFO = {
         help: 'Each bot is thrown at a loot place inside the ring instead of wherever the cannon would send it.' },
     'Game Settings/SweatyBotsBouncers': { label: 'Better bots: springboards', type: 'bool', brOnly: true,
         help: 'Bots use the springboards: up to high places, across the water, after a player who bounced, and to elbow drop.' },
+    'Game Settings/SweatyBotsNavGeom': { label: 'Better bots: navigation on buildings', type: 'bool', brOnly: true,
+        help: 'Gives the map\'s static meshes the NavCollision the cook left out, so buildings and roofs are walkable. Off only for testing: bots then stay on the ground.' },
+    'Game Settings/SweatyBotsNavGeomInstanced': { label: 'Better bots: navigation on cliffs and rocks', type: 'bool', brOnly: true,
+        help: 'Builds walk mesh on instanced mesh components (cliffs, rock rows) too. Off leaves them terrain-only.' },
+    'Game Settings/SweatyBotsNavLinks': { label: 'Better bots: roof and tower links', type: 'bool', brOnly: true,
+        help: 'Drops links off roofs and tower tops so bots do not walk off them. The links found are kept in SweatyBotsLinks.txt.' },
+    'Game Settings/SweatyBotsNavNoWater': { label: 'Better bots: keep the walk mesh out of deep water', type: 'bool', brOnly: true,
+        help: 'No walk mesh below the water line, so bots do not path into deep water.' },
+    'Game Settings/SweatyBotsOwnInvoker': { label: 'Better bots: build mesh around a bot outside the ring', type: 'bool', brOnly: true,
+        help: 'A bot outside the ring\'s disc builds walk mesh around itself. Off = only the ring disc is built.' },
+    'Game Settings/SweatyBotsClimbStopPath': { label: 'Better bots: stop path following while climbing', type: 'bool', brOnly: true,
+        help: 'Off is recommended: with buildings in the mesh it is not needed, and the stop left the move task with no move. On = the earlier behavior.' },
+    'Game Settings/SweatyBotsNavJobs': { label: 'Better bots: navigation build jobs', type: 'int', min: 1, max: 64, brOnly: true,
+        help: 'How many tiles the bots\' walk mesh builds at once. The engine\'s value is 2; a large value hitches a 2-core host.' },
+    'Game Settings/SweatyBotsNavJobsBuild': { label: 'Better bots: first-ring build jobs', type: 'int', min: 1, max: 64, brOnly: true,
+        help: 'The same while the first ring\'s mesh is built during the barge countdown (server default 4).' },
     'Game Settings/SweatyBotsProbe': { label: 'Better bots: evidence lines in the log', type: 'bool', brOnly: true,
         help: 'The bots report what they are doing every 30 s ([SWEATYBOTS] lines). Cheap; off is a quieter log.' },
 };
@@ -134,12 +161,12 @@ export async function admin(path, method = 'GET') {
 }
 
 // ---- control socket of the main process (supervisor start/stop/restart and its state) ----
-export function control(command) {
+export function control(command, extra = {}) {
     return new Promise((resolve, reject) => {
         const s = net.connect(CONTROL_SOCK);
         let data = '';
         s.setTimeout(60000, () => { s.destroy(); reject(new Error('no answer from the main process')); });
-        s.on('connect', () => s.end(JSON.stringify({ command })));
+        s.on('connect', () => s.end(JSON.stringify({ command, ...extra })));
         s.on('data', d => { data += d; });
         s.on('end', () => { try { const j = JSON.parse(data); j.success === false ? reject(new Error(j.error)) : resolve(j); } catch { reject(new Error('bad answer from the main process')); } });
         s.on('error', () => reject(new Error('The container\'s main process is not reachable (is the container running?).')));
@@ -227,10 +254,13 @@ export async function instanceAction(target, action) {
 }
 
 export async function restartAll() {
-    const list = (await admin('/instances')).instances || [];
-    const done = [];
-    for (const i of list) if (i.want === 'running' && !i.modeOff) { await admin(`/instances/${i.id}/restart`, 'POST'); done.push(i.id); }
-    return done;
+    try { return (await control('restart-all')).restarted || []; }
+    catch {
+        const list = (await admin('/instances')).instances || [];
+        const done = [];
+        for (const i of list) if (i.want === 'running' && !i.modeOff) { await admin(`/instances/${i.id}/restart`, 'POST'); done.push(i.id); }
+        return done;
+    }
 }
 
 // Same as the supervisor's own setMode(): change modes.json, which it re-reads every 5 seconds.
@@ -240,7 +270,7 @@ export function setMode(mode, on) {
     const f = modesFile();
     const obj = readJson(f, {});
     obj[m.key] = on === true;
-    writeFileSync(f, JSON.stringify(obj, null, 2) + '\n');
+    writeJson(f, obj, 0o644);
     return `Mode ${m.key} switched ${on ? 'on' : 'off'}.`;
 }
 
@@ -255,16 +285,21 @@ export function getSettings(mode) {
     const { m, file } = configFile(mode);
     const ini = readIni(file);
     const info = settingInfo();
+    // In the pairs method the kit's WarmSpare setting has no effect; the Zero Wait switch owns it.
+    const pairs = pairsInfo().kind === 'pairs';
+    const hidden = k => pairs && k === 'Game Settings/WarmSpare';
     const settings = Object.entries(ini)
-        .filter(([k]) => EDITABLE_SECTIONS.includes(k.split('/')[0]) && !LOCKED.has(k))
+        .filter(([k]) => EDITABLE_SECTIONS.includes(k.split('/')[0]) && !LOCKED.has(k) && !hidden(k))
         .map(([k, v]) => ({ key: k, name: k.split('/')[1], value: v, ...(info[k] || { label: k.split('/')[1], type: 'text' }) }));
     // Known settings that this Config.<mode>.ini does not contain yet: shown as unset (server default).
     // Battle royale only ones (barge, cannon) are left out for Playground.
     for (const [k, i] of Object.entries(info)) {
-        if (!(k in ini) && EDITABLE_SECTIONS.includes(k.split('/')[0]) && !(i.brOnly && m.key === 'playground'))
+        if (!(k in ini) && EDITABLE_SECTIONS.includes(k.split('/')[0]) && !(i.brOnly && m.key === 'playground') && !hidden(k))
             settings.push({ key: k, name: k.split('/')[1], value: '', unset: true, ...i });
     }
-    return { mode: m.key, id: m.id, label: m.label, settings };
+    const out = { mode: m.key, id: m.id, label: m.label, settings };
+    if (pairs) out.notice = 'Zero Wait uses server pairs on this server. Use the Zero Wait switch (or rv swap on|off), not the Warm spare server setting.';
+    return out;
 }
 
 // values: { 'Game Settings/SpawnBot': '30', ... } - the short key name ('SpawnBot') works too.
@@ -272,6 +307,9 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
     const { m, file } = configFile(mode);
     const ini = readIni(file);
     const infoAll = settingInfo();
+    const pairs = pairsInfo().kind === 'pairs';
+    if (pairs && Object.keys(values).some(k => k.toLowerCase().split('/').pop() === 'warmspare'))
+        throw new Error('Zero Wait uses server pairs on this server: use the Zero Wait switch, not the Warm spare server setting.');
     const bySection = {};
     for (const [rawKey, v] of Object.entries(values)) {
         const byName = keys => keys.find(x => x.toLowerCase().split('/')[1] === rawKey.toLowerCase() && EDITABLE_SECTIONS.includes(x.split('/')[0]));
@@ -291,6 +329,7 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
         (bySection[sec] ||= {})[key] = val;
     }
     for (const [sec, vals] of Object.entries(bySection)) setIniValues(file, sec, vals);
+    if (bySection['Game Settings']?.WarmSpare !== undefined) updateState({ swapModes: selectedSpareModes() });
     if ((readState().pairedModes || []).includes(m.key)) {
         // a server pair: both of its servers read this file; each applies it at its next start
         if (restart) restartActive(m.key);
@@ -302,14 +341,20 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
         : 'Saved - takes effect when the server next restarts (BR modes restart after every match).';
 }
 
-// Zero Wait: the kit's warm spares where the kit has them, else server pairs. Whether it can run here and
-// which modes have it.
+// Zero Wait: the method that is running (written at start), the owner's request, and whether a
+// change is waiting for the servers to empty.
 export function pairsInfo() {
-    if (kitHasWarmSpare()) return { available: true, reason: '', kind: 'spare', portOffset: SPARE_PORT_OFFSET, modes: warmSpareModes() };
-    const a = pairsAvailable();
-    return { available: a.ok, reason: a.reason, kind: 'pairs', modes: swapModes() };
+    const a = activePlan();
+    const modes = a.kind === 'spare' ? warmSpareModes() : a.kind === 'pairs' ? swapModes() : [];
+    return { ...a, requestedNow: requestedMethod(), available: a.kind !== 'none', portOffset: SPARE_PORT_OFFSET, modes };
 }
-export const setPair = (mode, on) => kitHasWarmSpare() ? setWarmSpare(resolveId(mode).key, on) : setSwapMode(mode, on);
+export const setPair = (mode, on) => {
+    const kind = pairsInfo().kind;
+    if (kind === 'spare') return setWarmSpare(resolveId(mode).key, on);
+    if (kind === 'pairs') return setSwapMode(mode, on);
+    throw new Error('Zero Wait is not running on this server (the status page says why).');
+};
+export const setZeroWaitMethod = method => setMethod(method);
 
 export const node = () => admin('/node');
 

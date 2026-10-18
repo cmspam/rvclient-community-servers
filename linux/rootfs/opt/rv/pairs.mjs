@@ -54,12 +54,37 @@ const env = process.env;
 const KSM = /^(1|on|yes|true)$/i.test(env.RV_KSM || '');
 const ROUND_END_DELAY_MS = (Number(env.RV_SWAP_ROUND_END_DELAY_SEC) || 5) * 1000;
 const BOOT_LIMIT_MS = (Number(env.RV_SWAP_BOOT_LIMIT_SEC) || 360) * 1000;
-const STATS_SETTLE_MS = 3000, ROUND_END_MAX_MS = 15000;
+// Round end: wait for the Server.dll confirmation that the match reports reached the backend
+// ("[STATS] match reports posted"). Kits before the line existed keep the old settle after the
+// "[STATS] ... sent to the backend" lines.
+const STATS_SETTLE_MS = 3000;
+const ROUND_QUIET_MS = (Number(env.RV_SWAP_ROUND_END_QUIET_SEC) || 6) * 1000;   // no reports to send
+const UPLOAD_WAIT_MS = (Number(env.RV_SWAP_UPLOAD_WAIT_SEC) || 20) * 1000;      // the DLL's own flush limit
+const ROUND_END_MAX_MS = Math.max(30000, UPLOAD_WAIT_MS + 5000);
 const STUCK_MATCH_MS = 30 * 60 * 1000;   // like the supervisor's stuckMatchMin
 const FAULTS_PER_MIN = 300;              // like the supervisor's faultsPerMin, for 3 minutes
 const STUCK = new Set(['match running longer than any match', 'fault flood']);
 const CRASH_BACKOFF_SEC = [10, 30, 60, 120];   // like the supervisor's crashBackoffSec
 const SIDES = ['a', 'b'];
+
+// Is the round-end wait over? Pure, so the upload timing can be tested with timestamps.
+//   c: { roundOverAt, roundOverPos, sentAt, sentPos, postedPos, endLabel }
+// A posted line confirms the batch whose sent lines came after the round-over line. Without sent
+// lines there was nothing to upload (or it was already confirmed before the line), so the quiet
+// window ends the wait. Kits without the posted line keep the old settle after a sent line.
+export function endSettled(c, now, postedSupported) {
+    if (!c.roundOverAt) return '';
+    const since = now - c.roundOverAt;
+    const sentAfter = c.sentPos > c.roundOverPos ? c.sentPos : 0;
+    const confirmed = sentAfter && c.postedPos > sentAfter;
+    const quiet = !sentAfter && since >= ROUND_QUIET_MS;
+    const oldKit = !postedSupported && sentAfter && now - c.sentAt >= STATS_SETTLE_MS;
+    const uploadCap = sentAfter && now - c.sentAt >= UPLOAD_WAIT_MS;
+    if (since >= ROUND_END_DELAY_MS && (confirmed || quiet || oldKit || uploadCap || since >= ROUND_END_MAX_MS))
+        return c.endLabel || 'round over';
+    return '';
+}
+const BR = new Set(['solo', 'duos', 'trios', 'squads']);
 const other = s => (s === 'a' ? 'b' : 'a');
 
 // Modes listed in RV_SWAP (or all), by key.
@@ -77,12 +102,13 @@ const MAIN_MODES = join(SUP_DIR, 'modes.main.json');        // what the main sup
 // Modes chosen to run as pairs (when they are switched on). RV_SWAP gives the first value.
 export function swapModes() {
     const st = readState();
-    if (Array.isArray(st.swapModes)) return st.swapModes.filter(k => MODES.some(m => m.key === k));
-    return listedModes();
+    const list = Array.isArray(st.swapModes) ? st.swapModes : listedModes();
+    return list.filter(k => BR.has(k));   // Playground has no matches to wait between
 }
 export function setSwapMode(key, on) {
     const m = MODES.find(x => x.key === key);
     if (!m) throw new Error(`Unknown mode "${key}" (solo, playground, duos, trios, squads).`);
+    if (!BR.has(m.key)) throw new Error(`${m.label} has no matches to wait between: Zero Wait is for Solos, Duos, Trios and Squads.`);
     const cur = new Set(swapModes());
     if (on) cur.add(m.key); else cur.delete(m.key);
     updateState({ swapModes: MODES.map(x => x.key).filter(k => cur.has(k)) });
@@ -91,12 +117,20 @@ export function setSwapMode(key, on) {
 
 // ---- checks ----
 function sh(cmd, args, opts = {}) { return execFileSync(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], ...opts }).toString(); }
-// Can this container run pairs? { ok, reason }
+// Can this container run pairs? { ok, reason }. The probe creates and removes a real namespace:
+// "ip netns list" and "nft list tables" can succeed with NET_ADMIN but without SYS_ADMIN, and the
+// failure would only appear later, after the supervisor has started.
 export function pairsAvailable() {
     try { sh('ip', ['netns', 'list']); } catch { return { ok: false, reason: 'the image has no "ip netns" (update the image)' }; }
     try { sh('nft', ['list', 'tables']); } catch { return { ok: false, reason: 'the container needs the rights for it (AddCapability=NET_ADMIN SYS_ADMIN, see the README)' }; }
+    const probe = `rvprobe${process.pid}`;
+    let added = false;
+    try { sh('ip', ['netns', 'add', probe]); added = true; }
+    catch { return { ok: false, reason: 'the container cannot create network namespaces (AddCapability=NET_ADMIN SYS_ADMIN, see the README)' }; }
+    finally { if (added) { try { sh('ip', ['netns', 'del', probe]); } catch { /* gone */ } } }
     let fwd = '0'; try { fwd = fs.readFileSync('/proc/sys/net/ipv4/ip_forward', 'utf8').trim(); } catch { /* */ }
     if (fwd !== '1') return { ok: false, reason: 'IP forwarding is off in the network of the container (net.ipv4.ip_forward=1, see the README)' };
+    try { addrOf(uplink()); } catch (e) { return { ok: false, reason: `the container has no IPv4 default route (${e.message})` }; }
     return { ok: true, reason: '' };
 }
 
@@ -210,6 +244,13 @@ ${lines.map(l => `        ${l.snat}`).join('\n')}
 
 // ---- watching a server ----
 const size = f => { try { return fs.statSync(f).size; } catch { return 0; } };
+// Server kits from 2026.10.10.1 log "[STATS] match reports posted"; older ones do not.
+function kitLogsPosted() {
+    const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)/.exec(kitVersion());
+    if (!m) return false;
+    const [y, mo, d, n] = m.slice(1).map(Number);
+    return y > 2026 || (y === 2026 && (mo > 10 || (mo === 10 && (d > 10 || (d === 10 && n >= 1)))));
+}
 function readRange(f, from, to) {
     try {
         const fd = fs.openSync(f, 'r');
@@ -228,8 +269,8 @@ function pidOfInstance(id) {
     return 0;
 }
 const gamePid = sv => pidOfInstance(sv.id);
-// Server.dll's status file (rv_status_<instance>.json, rewritten every second) when this server writes one:
-// { flow, joinable, conns, roundOver, statsQueued, statsPosted }. null = none, or stale (> 5 s).
+// Server.dll's status file (rv_status_<instance>.json) when this server writes one: the flow state.
+// null = none, or stale (> 5 s). The shipping kit does not write one; the trace is the main source.
 function liveStatus(sv) {
     try {
         if (Date.now() - fs.statSync(sv.status).mtimeMs > 5000) return null;
@@ -289,9 +330,13 @@ function createWatch(sv, log) {
     // "DllMain: begin" comes after that, so a new process is never judged by the previous one's lines.
     // A process that is already there when the watch begins is judged from where the trace ended then.
     const start = size(sv.trace);
+    // Does this Server.dll log the match-report upload result? The kit version says; a previous
+    // match in the tail is a second source.
+    let postedSupported = kitLogsPosted();
+    try { postedSupported = readRange(sv.trace, Math.max(0, start - 4000000), start).includes('match reports posted') || postedSupported; } catch { /* none */ }
     let seen = { pid: 0, offset: start }, watching = false, boot = {}, up = {}, restartedPid = 0;
     const w = {
-        sv,
+        sv, postedSupported,
         observe() {
             const pid = gamePid(sv);
             if (pid && pid !== seen.pid) seen = { pid, offset: watching ? size(sv.trace) : start };
@@ -412,11 +457,15 @@ export function prepareModes(log) {
         writeJson(USER_MODES, user, 0o644);
         updateState({ modesSplit: true });
     }
-    if (!fs.existsSync(MAIN_MODES)) writeJson(MAIN_MODES, Object.fromEntries(MODES.map(m => [m.key, !!user[m.key] && !swapModes().includes(m.key)])), 0o644);
-    if (inst.modesFile !== 'modes.main.json') {
+    // Always rewritten: after a stay in the spare method the old file can disagree with the modes
+    // and with the operator's per-mode Zero Wait choice. The supervisor reads it before its first tick.
+    const mainWant = Object.fromEntries(MODES.map(m => [m.key, !!user[m.key] && !swapModes().includes(m.key)]));
+    writeJson(MAIN_MODES, mainWant, 0o644);
+    if (inst.modesFile !== 'modes.main.json' || inst.warmSpare !== false) {
         inst.modesFile = 'modes.main.json';
+        inst.warmSpare = false;   // read when the supervisor starts: no warm spares while pairs run
         writeJson(INSTANCES, inst, 0o644);
-        log('[pairs] the main supervisor now reads modes.main.json (modes.json without the server pairs)');
+        log('[pairs] the main supervisor reads modes.main.json and runs no warm spares');
     }
     return true;
 }
@@ -453,7 +502,7 @@ export function createPairs({ log = console.log } = {}) {
         const p = { mode, a: server(mode, 'a'), b: server(mode, 'b') };
         for (const sd of SIDES) { preparePrefix(p[sd], log); prepareNet(p[sd]); }
         if (!active[mode.key]) active[mode.key] = 'a';
-        const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, goneSince: 0, wasUp: false };
+        const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, roundOverPos: 0, endLabel: '', sentAt: 0, sentPos: 0, postedPos: 0, goneSince: 0, wasUp: false };
         running.set(mode.key, { p, ctl, procs: {} });
         apply();
         // the active server starts first; the waiting one a minute and a half later
@@ -479,7 +528,9 @@ export function createPairs({ log = console.log } = {}) {
         if (busy) return;
         busy = true;
         try {
-            const user = readJson(USER_MODES, {}), chosen = new Set(swapModes());
+            const user = readJson(USER_MODES, null);
+            if (!user) return;   // being replaced right now: keep what runs
+            const chosen = new Set(swapModes());
             const want = MODES.filter(m => user[m.key] && chosen.has(m.key));
             // pairs to stop first: the main supervisor may only run the mode once its pair is gone
             for (const key of [...running.keys()]) if (!want.some(m => m.key === key)) await stopPair(key);
@@ -530,35 +581,38 @@ export function createPairs({ log = console.log } = {}) {
                 const key = c.p.mode.key, act = active[key], sb = other(act), A = c.w[act], B = c.w[sb];
                 A.observe(); B.observe();
                 const f = c.p[act].trace, s = size(f);
-                if (s < c.off) c.off = 0;
+                if (s < c.off) { c.off = 0; c.roundOverPos = 0; c.sentPos = 0; c.postedPos = 0; }
                 if (s > c.off) {
-                    const text = readRange(f, c.off, s); c.off = s;
-                    if (!c.waiting && /\[ROUNDEND\] round over/.test(text) && !c.roundOverAt) c.roundOverAt = Date.now();
-                    if (!c.waiting && /terminating for restart/.test(text)) c.waiting = 'match over';
-                    else if (!c.waiting && /\[FATAL\]|boot attempts exhausted/.test(text)) c.waiting = 'crashed';
+                    const from = c.off, text = readRange(f, from, s); c.off = s;
+                    const at = m => from + m.index;
+                    const roundM = /\[ROUNDEND\] round over/.exec(text);
+                    if (!c.waiting && roundM && !c.roundOverAt) { c.roundOverAt = Date.now(); c.roundOverPos = at(roundM); c.endLabel = 'round over'; }
+                    // AutoRestarts (round over, bots-only match, back to free roam) logs this before
+                    // ExitForRestart() flushes the last match reports. The swap must wait for them.
+                    const termM = /terminating for restart/.exec(text);
+                    if (!c.waiting && termM && !c.roundOverAt) { c.roundOverAt = Date.now(); c.roundOverPos = at(termM); c.endLabel = 'match over'; }
+                    if (!c.waiting && /\[FATAL\]|boot attempts exhausted/.test(text)) c.waiting = 'crashed';
                     else if (!c.waiting && c.wasUp && /DllMain: begin/.test(text)) c.waiting = 'restarted';
                     for (const m of text.matchAll(/\[FLOW\] game flow -?\d+ -> (-?\d+)/g)) { c.flow = Number(m[1]); c.flowSince = Date.now(); }
                     c.faults = (c.faults || 0) + (text.match(/\[CRASHGUARD\]/g) || []).length;
-                    if (/\[STATS\] .* sent to the backend/.test(text)) c.statsAt = Date.now();
-                    if (/\[STATS\] match reports posted/.test(text)) c.postedAt = Date.now();
+                    const sent = [...text.matchAll(/\[STATS\][^\n]*sent to the backend/g)].pop();
+                    if (sent) { c.sentAt = Date.now(); c.sentPos = at(sent); }
+                    const posted = [...text.matchAll(/\[STATS\] match reports posted:/g)].pop();
+                    if (posted) { A.postedSupported = true; c.postedPos = at(posted); }
                 }
-                // Server.dll's status file, where it writes one: the same events, without reading the trace.
+                // Server.dll's status file, where it writes one: the flow state, without reading the trace.
                 const ls = liveStatus(c.p[act]);
-                if (ls) {
-                    if (Number.isInteger(ls.flow) && ls.flow !== c.flow) { c.flow = ls.flow; c.flowSince = Date.now(); }
-                    if (!c.waiting && ls.roundOver && !c.roundOverAt) c.roundOverAt = Date.now();
-                    if (ls.statsPosted > (c.statsPosted ?? ls.statsPosted)) c.postedAt = Date.now();
-                    c.statsPosted = ls.statsPosted;
-                }
+                if (ls && Number.isInteger(ls.flow) && ls.flow !== c.flow) { c.flow = ls.flow; c.flowSince = Date.now(); }
                 if (!c.wasUp && A.ready()) c.wasUp = true;
-                // Round over: Server.dll sends every remaining player's match report (Game Records) then. The
-                // swap cuts the old server off, so it waits until the reports were posted ("[STATS] match reports
-                // posted", where Server.dll logs it) or, without that, until no report has been queued for
-                // STATS_SETTLE_MS - at most ROUND_END_MAX_MS after the round.
+                // Round end: Server.dll queues each player's match report and logs "sent to the backend",
+                // then "match reports posted: ok|FAILED" once the POST returned. The swap cuts the old
+                // server's network, so it waits for that confirmation. Only reports from the round-over
+                // batch count (a sent line after the round-over line). A match with nothing to send, or a
+                // report that was already confirmed before the round-over line (the winner's), settles
+                // after the quiet window. Without the confirmation line (older kits), the old settle stays.
                 if (!c.waiting && c.roundOverAt) {
-                    const since = Date.now() - c.roundOverAt;
-                    const settled = c.postedAt > c.roundOverAt || (!c.postedAt && (!c.statsAt || Date.now() - c.statsAt >= STATS_SETTLE_MS));
-                    if (since >= ROUND_END_MAX_MS || (since >= ROUND_END_DELAY_MS && settled)) c.waiting = 'round over';
+                    const end = endSettled(c, Date.now(), A.postedSupported);
+                    if (end) c.waiting = end;
                 }
                 if (!c.waiting && c.wasUp) {
                     c.goneSince = gamePid(c.p[act]) ? 0 : (c.goneSince || Date.now());
@@ -582,14 +636,15 @@ export function createPairs({ log = console.log } = {}) {
                     A.forget();
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - swapped: ${sb} is active, ${act} restarts and waits`);
                     if (STUCK.has(c.waiting)) A.kill(c.waiting);
-                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1; c.flow = null; c.faults = 0; c.floodMin = 0; c.statsAt = 0; c.postedAt = 0; c.statsPosted = undefined;
+                    c.off = size(c.p[sb].trace); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.sentAt = 0; c.sentPos = 0; c.postedPos = 0;
+                    c.goneSince = 0; c.wasUp = true; c.restarts = (c.restarts || 0) + 1; c.flow = null; c.faults = 0; c.floodMin = 0;
                 } else if (c.waiting === 'map incomplete') {
-                    A.checkHealth(); c.waiting = ''; c.roundOverAt = 0;
+                    A.checkHealth(); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = '';
                 } else if (STUCK.has(c.waiting)) {
-                    A.kill(`${c.waiting} (${sb} was not ready)`); c.waiting = ''; c.roundOverAt = 0; c.flow = null; c.floodMin = 0;
+                    A.kill(`${c.waiting} (${sb} was not ready)`); c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.flow = null; c.floodMin = 0;
                 } else if (A.ready()) {
                     log(`[pairs] ${c.p.mode.label}: ${c.waiting} on ${act} - ${sb} was not ready; ${act} restarted and stays active`);
-                    c.waiting = ''; c.roundOverAt = 0; c.goneSince = 0; c.wasUp = true;
+                    c.waiting = ''; c.roundOverAt = 0; c.roundOverPos = 0; c.endLabel = ''; c.goneSince = 0; c.wasUp = true;
                 }
             }
         }

@@ -26,32 +26,59 @@ export function kitHasWarmSpare() {
 
 const iniOf = key => join(WIN64, `Config.${key}.ini`);
 const truthy = v => !/^(false|0|no|off)$/i.test(String(v ?? '').trim());
+const keyOf = (ini, name) => Object.keys(ini).find(x => x.split('/')[1]?.toLowerCase() === name);
 
 // WarmSpare of a mode as the supervisor reads it: on unless the ini says false/0/no/off.
-export function warmSpareOn(key) {
-    if (!BR.has(key)) return false;
+function iniWarmSpareOn(key) {
     try {
         const ini = readIni(iniOf(key));
-        const k = Object.keys(ini).find(x => x.split('/')[1]?.toLowerCase() === 'warmspare');
+        const k = keyOf(ini, 'warmspare');
         return k ? truthy(ini[k]) : true;
     } catch { return false; }
 }
+// Private servers (RequireMatchmadeJoin=false) aren't matchmade: the kit starts no spare for them.
+function matchmade(key) {
+    try {
+        const ini = readIni(iniOf(key));
+        const k = keyOf(ini, 'requirematchmadejoin');
+        return !(k && !truthy(ini[k]));
+    } catch { return true; }
+}
+export function warmSpareOn(key) {
+    if (!BR.has(key)) return false;
+    return iniWarmSpareOn(key) && matchmade(key);
+}
+// The per-mode choice as the operator set it, regardless of whether the kit can use it here.
+export const selectedSpareModes = () => brModes().filter(m => iniWarmSpareOn(m.key)).map(m => m.key);
 export function setWarmSpare(key, on) {
     const m = MODES.find(x => x.key === key);
     if (!m) throw new Error(`Unknown mode "${key}" (solo, playground, duos, trios, squads).`);
     if (!BR.has(m.key)) throw new Error(`${m.label} has no matches to wait between: Zero Wait is for Solos, Duos, Trios and Squads.`);
     if (!existsSync(iniOf(m.key))) throw new Error(`Config.${m.key}.ini not found (is the server set up?)`);
     setIniValues(iniOf(m.key), 'Game Settings', { WarmSpare: on ? 'true' : 'false' });
+    updateState({ swapModes: selectedSpareModes() });
     return `${m.label}: Zero Wait ${on ? 'on - its spare server starts within a few seconds (with enough free memory)' : 'off - its spare server closes after its current match'}.`;
 }
 export const warmSpareModes = () => brModes().filter(m => warmSpareOn(m.key)).map(m => m.key);
+
+// A method change from pairs to spares: the per-mode choice was kept in state.swapModes, write it
+// into the inis the kit reads. Only called on a transition, never on every start.
+export function applySpareModeSelection(log) {
+    const chosen = new Set(Array.isArray(readState().swapModes) ? readState().swapModes : []);
+    for (const m of brModes()) {
+        if (!existsSync(iniOf(m.key))) continue;
+        setIniValues(iniOf(m.key), 'Game Settings', { WarmSpare: chosen.has(m.key) ? 'true' : 'false' });
+    }
+    updateState({ swapModes: selectedSpareModes() });
+    log(`[spare] Zero Wait modes: ${selectedSpareModes().join(', ') || 'none'}`);
+}
 
 // Before the supervisor starts: it reads the owner's modes.json (the pairs' modes.main.json is not used),
 // the spare settings from the environment, and the modes' Zero Wait choice from the pairs era, once.
 export function prepareWarmSpare(log) {
     const inst = readJson(INSTANCES, null);
     if (inst) {
-        const want = { ...inst, modesFile: 'modes.json', warmSpareFirewall: false };
+        const want = { ...inst, modesFile: 'modes.json', warmSpare: true, warmSpareFirewall: false };
         const minFree = Number(process.env.RV_WARM_SPARE_MIN_FREE_MB);
         if (minFree > 0) want.warmSpareMinFreeMb = Math.round(minFree); else delete want.warmSpareMinFreeMb;
         if (JSON.stringify(want) !== JSON.stringify(inst)) writeJson(INSTANCES, want, 0o644);
@@ -70,9 +97,10 @@ export function prepareWarmSpare(log) {
             setIniValues(iniOf(m.key), 'Game Settings', { WarmSpare: chosen.has(m.key) ? 'true' : 'false' });
         }
         updateState({ warmSpareSet: true });
-        log(`[spare] Zero Wait runs on the server kit's warm spares: ${warmSpareModes().join(', ') || 'no modes'} (per mode: WarmSpare in Config.<mode>.ini)`);
     }
-    updateState({ pairedModes: [] });
+    // The ini is the operator's choice in the spare method; keep the state list in step.
+    updateState({ swapModes: selectedSpareModes(), pairedModes: [] });
+    log(`[spare] Zero Wait runs on the server kit's warm spares: ${warmSpareModes().join(', ') || 'no modes'} (per mode: WarmSpare in Config.<mode>.ini)`);
 }
 
 // `rv swap status | on <mode> | off <mode> | restart <mode>` with warm spares.

@@ -11,7 +11,8 @@
 #
 # Every question can be answered in advance through an environment variable (RV_GAME_ZIP,
 # RV_DATA_DIR, RV_EDITION=community|private, RV_SETUP_CODE, RV_CONTACT, RV_NAME, RV_PUBLIC_IP,
-# RV_MODES=solo,duos,..., RV_SWAP=solo,... (Zero Wait), RV_KSM=on|off, RV_WEBUI=on|off).
+# RV_MODES=solo,duos,..., RV_SWAP=solo,... (Zero Wait modes), RV_ZEROWAIT=pairs|spare (Zero Wait
+# method), RV_KSM=on|off, RV_WEBUI=on|off).
 # With RV_UNATTENDED=1 it never asks: unanswered questions take the suggested answer.
 set -euo pipefail
 
@@ -213,22 +214,41 @@ else
 fi
 
 # ---------------------------------------------------------------- Zero Wait
-# The server kit's warm spare: a second server of the mode on its port + 100. Server kits before 2026.10.10.1
-# have none; on those the container runs server pairs instead, which need IP forwarding and network rights
-# (given when installed as root).
+# Two methods. Server pairs (the default for now): one port, the container forwards it between two
+# servers and switches after the round's match reports are uploaded. Warm spare: the kit's second
+# server on the mode's port + 100, both registered, the backend sends players to the idle one.
+# Server pairs need IP forwarding and the network rights given here when installed as root.
 bold "8. Zero Wait (no waiting between matches)"
-SWAP=""
+case "${RV_ZEROWAIT:-}" in
+    ""|pairs|spare) ;;
+    *) die "RV_ZEROWAIT must be pairs or spare." ;;
+esac
+info "Two ways to keep the next match ready:"
+info "  1) Server pairs (default): two servers, the mode's own port. The container switches the"
+info "     port after the round's match reports are uploaded."
+info "  2) Warm spare: a second server on the mode's port + 100. Both report to the backend, which"
+info "     sends players to the one in its lobby."
+case "${RV_ZEROWAIT:-}" in pairs) PRE_METHOD=1 ;; spare) PRE_METHOD=2 ;; *) PRE_METHOD="" ;; esac
+ask "Choose 1 or 2" "1" "$PRE_METHOD"
+case "$REPLY" in
+    1|pairs) METHOD=pairs ;;
+    2|spare) METHOD=spare ;;
+    *) die "Choose 1 (server pairs) or 2 (warm spare)." ;;
+esac
+[ "$METHOD" = spare ] && ENV_ARGS+=(RV_ZEROWAIT=spare)
+[ "$IS_ROOT" = 0 ] && [ "$METHOD" = pairs ] && warn "Without root the container gets no NET_ADMIN/SYS_ADMIN: Zero Wait falls back to the warm spare."
 if [ "$IS_ROOT" = 1 ]; then
-    printf '# Rumbleverse server (Zero Wait on server kits before 2026.10.10.1): the container forwards between its game servers and the internet.\nnet.ipv4.ip_forward = 1\n' > /etc/sysctl.d/80-rvserver-forward.conf
+    printf '# Rumbleverse server (Zero Wait server pairs): the container forwards between its game servers and the internet.\nnet.ipv4.ip_forward = 1\n' > /etc/sysctl.d/80-rvserver-forward.conf
     sysctl -q -w net.ipv4.ip_forward=1
 fi
+SWAP=""
 if true; then
-    if [ -z "${MODES:-}" ]; then info "No modes chosen yet: switch it on later on the web page (Zero Wait switch) or with rv swap on <mode>."
+    if [ -z "${MODES:-}" ]; then info "No modes chosen yet: switch Zero Wait on later on the web page (Zero Wait switch) or with rv swap on <mode>."
     else
         info "Normally a mode needs a minute or two between matches while its server restarts. With Zero Wait"
         info "a second server of that mode is already started and waiting, so players queue straight into the"
-        info "next match. It needs memory for one more server of that mode (about $((EACH / 1000)).$(( (EACH % 1000) / 100 )) GB)"
-        info "and that server's port open to players: the mode's port + 100 (Solos 7877, Duos 7879, Trios 7880, Squads 7881)."
+        info "next match. It needs memory for one more server of that mode (about $((EACH / 1000)).$(( (EACH % 1000) / 100 )) GB)."
+        [ "$METHOD" = spare ] && info "With the warm spare method that server's port must also be open: the mode's port + 100 (Solos 7877, Duos 7879, Trios 7880, Squads 7881)."
         # Suggest the battle royale modes (in the order chosen) that still fit next to the modes chosen.
         LEFT=$(( USABLE - FIRST - (COUNT - 1) * EACH )); DEF_SWAP=""
         for m in solo duos trios squads; do
@@ -402,6 +422,12 @@ else
 fi
 
 # ---------------------------------------------------------------- result
+# An existing setup keeps its state; the method chosen above wins over the environment.
+if [ "$ALREADY" = 1 ]; then
+    $ENGINE exec "$NAME" rv swap method "$METHOD" >/dev/null 2>&1 \
+        && info "Zero Wait method: $METHOD (applies when the servers are empty)." \
+        || info "Set the Zero Wait method later: $ENGINE exec $NAME rv swap method $METHOD"
+fi
 PASS=""
 if [ "$USE_WEB" = 1 ]; then
     for _ in $(seq 60); do

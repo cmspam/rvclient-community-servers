@@ -23,7 +23,9 @@ export const HELP = `Rumbleverse server - terminal admin
   rv leave                             remove this server from the rVclient server list (before deleting it)
   rv setup                             first-time setup on the terminal
   rv reset-password                    new random web UI password
-  rv swap status | restart <mode>      Zero Wait: each mode's server and its warm spare (port + 100)
+  rv swap status | restart <mode>      Zero Wait: the method, each mode's server and its second server
+  rv swap method [pairs|spare]         the Zero Wait method: server pairs (one port) or the kit's
+                                       warm spare (two ports, the backend chooses)
   rv swap on|off <mode>                Zero Wait on or off for a mode (no waiting between matches)
 
   Modes: ${MODES.map(m => m.key).join(', ')}`;
@@ -40,6 +42,8 @@ async function printStatus() {
         console.log(`Supervisor ${sup.state.state}${sup.state.upSec ? ` for ${up(sup.state.upSec)}` : ''}` +
             (sup.state.pendingRestart ? '  (restart pending after a supervisor update)' : ''));
     } catch (e) { console.log(`Supervisor: ${e.message}`); }
+    const zw = ops.pairsInfo();
+    console.log(`Zero Wait ${zw.kind}${zw.pending ? ' (a method change is pending)' : ''}${zw.warned ? ` - ${zw.warned}` : zw.reason ? ` - ${zw.reason}` : ''}`);
     let list = [];
     try { list = await ops.instances(); } catch (e) { console.log(e.message); return; }
     console.log('');
@@ -65,6 +69,7 @@ const hint = x => x.type === 'int' ? ` (${x.min}-${x.max})` : x.type === 'bool' 
 function printSettings(mode) {
     const s = ops.getSettings(mode);
     console.log(`${s.label} settings:`);
+    if (s.notice) console.log(`  ${s.notice}`);
     for (const x of s.settings) console.log(`  ${x.name.padEnd(22)} ${(x.unset ? '(default)' : String(x.value)).padEnd(10)} ${x.label !== x.name ? x.label : ''}${hint(x)}`);
 }
 

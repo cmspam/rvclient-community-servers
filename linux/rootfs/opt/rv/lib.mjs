@@ -45,6 +45,18 @@ export function updateState(patch) {
     return s;
 }
 
+// The server kit's ds-instances.json, read-modify-written with its other keys kept.
+export function updateInstances(patch) {
+    const inst = readJson(INSTANCES, null);
+    if (!inst) return null;
+    const next = { ...inst, ...patch };
+    writeJson(INSTANCES, next, 0o644);
+    return next;
+}
+// The kit's box-wide warm spare switch. It is read once when the supervisor starts, so it must be
+// written before the supervisor is started.
+export function setKitWarmSpare(on) { return updateInstances({ warmSpare: !!on }); }
+
 export const gameInstalled = () => existsSync(join(WIN64, GAME_EXE));
 export const kitInstalled = () => existsSync(join(SERVER, 'rv-server.version'));
 export const isConfigured = () => {
