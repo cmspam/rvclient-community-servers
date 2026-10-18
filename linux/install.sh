@@ -361,7 +361,7 @@ if [ "$ENGINE" = podman ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/s
         CAPS="SYS_RESOURCE"; [ "$IS_ROOT" = 1 ] && CAPS="SYS_RESOURCE NET_ADMIN SYS_ADMIN"
         [ -n "$CAPS" ] && echo "AddCapability=$CAPS"
         [ "$IS_ROOT" = 1 ] && echo "SecurityLabelDisable=true"
-        [ "$IS_ROOT" = 1 ] && [ "$USE_APPARMOR" = 1 ] && echo "SecurityOpt=apparmor=unconfined"
+        [ "$IS_ROOT" = 1 ] && [ "$USE_APPARMOR" = 1 ] && echo "PodmanArgs=--security-opt=apparmor=unconfined"
         [ "$USE_NTSYNC" = 1 ] && echo "AddDevice=/dev/ntsync"
         for e in "${ENV_ARGS[@]}"; do echo "Environment=\"$e\""; done
         echo

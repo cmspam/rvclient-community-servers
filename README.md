@@ -426,9 +426,10 @@ UDP port to the active one. A few seconds after a round ends, once Server.dll co
 match reports reached the backend (`[STATS] match reports posted`), the container switches the port
 to the second server, and the first one restarts and waits. The backend sees one server per mode the
 whole time. This method needs `Network=host`, the capabilities `NET_ADMIN SYS_ADMIN SYS_RESOURCE`,
-`SecurityLabelDisable=true` on SELinux hosts and `SecurityOpt=apparmor=unconfined` on AppArmor hosts
-(the installer adds both; Docker: `--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE
---security-opt label=disable --security-opt apparmor=unconfined`), a default route, and IP
+`SecurityLabelDisable=true` on SELinux hosts and `apparmor=unconfined` on AppArmor hosts (the
+installer adds both; the quadlet gets `PodmanArgs=--security-opt=apparmor=unconfined`, Docker:
+`--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE --security-opt label=disable
+--security-opt apparmor=unconfined`), a default route, and IP
 forwarding on the host (`net.ipv4.ip_forward=1`). The installer, run as root, sets all of this up.
 If any of it is missing,
 the container uses the warm spare when the kit has it, and says so in the log and on the web page.
