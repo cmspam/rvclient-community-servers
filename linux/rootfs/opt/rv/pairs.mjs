@@ -45,6 +45,7 @@ import { join } from 'node:path';
 import os from 'node:os';
 import { DATA, SERVER, WIN64, SUP_DIR, INSTANCES, MODES, GAME_EXE, readJson, writeJson, readState, updateState, isPairInstance } from './lib.mjs';
 import { applyAddons } from './addons.mjs';
+import { applyMapOnceConfig } from './maponce.mjs';
 
 const SWAP_DIR = join(DATA, 'swap');
 const STATE = join(SWAP_DIR, 'active.json');
@@ -421,6 +422,7 @@ function runServer(sv, log, delayMs) {
         if (proc.stopping) return;
         // the same preparations the main supervisor's game servers get (linux-shim.mjs)
         applyAddons(EXE);
+        try { applyMapOnceConfig(EXE, sv.wine); } catch (e) { log(`[pairs] ${sv.name}: map-once config: ${e.message}`); }
         const cmd = ['ip', 'netns', 'exec', sv.ns, ...(PRLIMIT ? [PRLIMIT, '--nice=20:20'] : []), ...(KSM ? ['rv-ksm'] : []), 'wine', EXE, ...instanceArgs(sv)];
         proc.kit = kitVersion();
         const child = spawn(cmd[0], cmd.slice(1), { cwd: WIN64, stdio: 'ignore', env: { ...env, WINEPREFIX: sv.wine } });

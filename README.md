@@ -63,7 +63,8 @@ software inside it is the official one and updates itself exactly as on Windows.
 Before every game start the container writes the engine config so the island loads once: the engine
 starts on the small SheikEntry map with the battle royale mode, and Server.dll loads at 5 seconds
 instead of 14. The game rewrites Engine.ini on exit, so the container writes the section again
-before the next start. This also applies to the server pairs.
+before the next start. This also applies to the server pairs: each pair server has its own Wine
+prefix, and the container writes the section in that prefix before every start of it.
 
 ### What you need
 
@@ -425,9 +426,11 @@ UDP port to the active one. A few seconds after a round ends, once Server.dll co
 match reports reached the backend (`[STATS] match reports posted`), the container switches the port
 to the second server, and the first one restarts and waits. The backend sees one server per mode the
 whole time. This method needs `Network=host`, the capabilities `NET_ADMIN SYS_ADMIN SYS_RESOURCE`,
-`SecurityLabelDisable=true` (Docker: `--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE
---security-opt apparmor=unconfined`), a default route, and IP forwarding on the host
-(`net.ipv4.ip_forward=1`). The installer, run as root, sets all of this up. If any of it is missing,
+`SecurityLabelDisable=true` on SELinux hosts and `SecurityOpt=apparmor=unconfined` on AppArmor hosts
+(the installer adds both; Docker: `--cap-add NET_ADMIN --cap-add SYS_ADMIN --cap-add SYS_RESOURCE
+--security-opt label=disable --security-opt apparmor=unconfined`), a default route, and IP
+forwarding on the host (`net.ipv4.ip_forward=1`). The installer, run as root, sets all of this up.
+If any of it is missing,
 the container uses the warm spare when the kit has it, and says so in the log and on the web page.
 
 **The warm spare** is the server kit's own method (kit 2026.10.10.1 and newer). Each battle royale
