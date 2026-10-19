@@ -44,6 +44,10 @@ export const SETTING_INFO = {
     'Game Settings/CharacterViewDistance': { label: 'Character view distance (metres, 0 = off)', type: 'int', min: 0, max: 5000,
         help: 'Anti-wallhack: send another player\'s character only within this many metres. Leave at 0: turning it on has left characters invisible in live tests, until reopening their channel is fixed.' },
     // Server.dll reads these too, but the kit's list does not offer them (texts from the Server.dll source).
+    'Game Settings/WaitForFriends': { label: 'Wait for friends on the barge podium', type: 'bool', brOnly: true,
+        help: 'Holds the barge launch at 60 seconds while every real player stands on the placement podium. The healing number shows the missing votes (100 = everyone is voting). A ping returns a player to the pad. Off by default.' },
+    'Game Settings/SpawnRescue': { label: 'Rescue a player spawned in the ocean', type: 'bool', brOnly: true,
+        help: 'Moves a real player spawned at the world origin (no floor) back to the barge pad during the countdown. On by default.' },
     'Game Settings/RoundEndRestartSec': { label: 'End-of-match screen (seconds)', type: 'int', min: 0, max: 120, brOnly: true,
         help: 'How long a finished match stays on the end-of-match screen before the server restarts for the next one (server default 30). An empty server restarts at once.' },
     'Game Settings/StormRingPlayers': { label: 'Storm sized for (players)', type: 'int', min: 0, max: 60, brOnly: true,
