@@ -580,11 +580,17 @@ if [ "$ALREADY" = 1 ]; then
 fi
 PASS=""
 if [ "$USE_WEB" = 1 ]; then
-    for _ in $(seq 60); do
-        PASS="$($ENGINE logs "$NAME" 2>&1 | awk '/admin password/ {getline; getline; gsub(/ /, ""); print; exit}' || true)"
-        [ -n "$PASS" ] && break
-        sleep 1
-    done
+    # The password is printed once, in the first start's banner. Read the log as it is written and
+    # stop at that line instead of asking the engine for the whole log every second; give up after
+    # 60 s. The password is the first non-empty line after the heading.
+    while IFS= read -r -t 60 _line <&3; do
+        if [[ "$_line" == *"admin password"* ]]; then
+            while IFS= read -r -t 5 _pw <&3; do
+                _pw="${_pw// /}"
+                if [ -n "$_pw" ]; then PASS="$_pw"; break 2; fi
+            done
+        fi
+    done 3< <(timeout 60 "$ENGINE" logs -f "$NAME" 2>&1)
 fi
 HOSTIP="${PUBLIC_IP:-$(curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')}"
 
