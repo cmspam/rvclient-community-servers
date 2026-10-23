@@ -72,7 +72,7 @@ prefix, and the container writes the section in that prefix before every start o
 - **Podman** or **Docker** (see step 1)
 - RAM: about 3 GB for one mode, about 2.5 GB for each further mode (1.8 GB with memory sharing)
 - Disk: about 25 GB free
-- A public IPv4 address; **UDP 7777-7781** reachable, and 7877-7881 with the warm spare method (also in your provider's firewall, if it has one)
+- A public IPv4 address; **UDP 7777-7781** reachable, or the ports you choose (see [Ports](#ports)), and the warm spare ports with the warm spare method (also in your provider's firewall, if it has one)
 - Your Rumbleverse game zip (about 11 GB)
 
 ### Easiest way: from your own computer, onto a fresh VPS
@@ -120,9 +120,9 @@ It asks:
 6. which **modes** to run (it suggests how many fit in your RAM)
 7. which modes get **Zero Wait**, no waiting between matches, and which method it uses (see
    [Zero Wait](#zero-wait-no-waiting-between-matches-linux); about 2.5 GB more RAM per mode. The
-   default method is server pairs; the warm spare method also needs the mode's port + 100 open to
-   players. It suggests the modes that fit, empty for none, and both the method and the modes can be
-   changed later on the web page)
+   default method is server pairs; the warm spare method also needs the mode's spare port (by
+   default the mode's port + 100) open to players. It suggests the modes that fit, empty for none,
+   and both the method and the modes can be changed later on the web page)
 8. whether to switch on **memory sharing** (recommended with more than one mode)
 9. whether to turn on the **web admin page**
 
@@ -163,6 +163,8 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_SETUP_CODE` | private: setup code from the launcher |
 | `RV_NAME` | server name |
 | `RV_MODES` | any of `solo,playground,duos,trios,squads`, or `all` |
+| `RV_PORT_BASE` | first game port: the modes get it and the next four, in the order `solo,playground,duos,trios,squads` (Linux; see [Ports](#ports)) |
+| `RV_PORTS` | one port per mode, e.g. `solo=8000,duos=8001`; wins over `RV_PORT_BASE` for the mode it names (Linux) |
 | `RV_PUBLIC_IP` | address players connect to (detected if empty) |
 | `RV_REGION` | e.g. `ap-northeast-1` (measured by ping if empty) |
 | `RV_KSM` | `on` = memory sharing between modes (see [Memory sharing](#memory-sharing-between-modes-ksm)) |
@@ -418,7 +420,7 @@ There are two ways to do this. The whole server uses one method, chosen by its o
 | Method | Ports | Who switches |
 |---|---|---|
 | **Server pairs** (default for this release) | the mode's own port | this container |
-| **Warm spare** | the mode's port and the mode's port + 100 | the server kit and the backend |
+| **Warm spare** | the mode's port and its spare port (the mode's port + 100 by default) | the server kit and the backend |
 
 **Server pairs** start two game servers of the mode on the mode's own port, each in its own network
 namespace. Only one of them is connected to the backend at a time; the container forwards the public
@@ -435,12 +437,13 @@ If any of it is missing,
 the container uses the warm spare when the kit has it, and says so in the log and on the web page.
 
 **The warm spare** is the server kit's own method (kit 2026.10.10.1 and newer). Each battle royale
-mode gets a second server, `<mode>-spare`, on the mode's port + 100 (Solos 7877, Duos 7879, Trios
-7880, Squads 7881), with the same `Config.<mode>.ini`. Both are ordinary game servers: each reports
-to the backend with its own port, and matchmaking sends players to whichever one is in its lobby.
-Nothing is switched at the network level. The spare's port must be open to players like the mode's
-own port (provider firewall, port forward); the installer opens 7877-7881/udp. A spare only starts
-with 2.5 GB of free memory (`RV_WARM_SPARE_MIN_FREE_MB` changes this).
+mode gets a second server, `<mode>-spare`, on the mode's spare port, by default the mode's port + 100
+(Solos 7877, Duos 7879, Trios 7880, Squads 7881), with the same `Config.<mode>.ini`. Both are
+ordinary game servers: each reports to the backend with its own port, and matchmaking sends players
+to whichever one is in its lobby. Nothing is switched at the network level. The spare's port must be
+open to players like the mode's own port (provider firewall, port forward); the installer opens the
+spare ports of the modes with Zero Wait. A spare only starts with 2.5 GB of free memory
+(`RV_WARM_SPARE_MIN_FREE_MB` changes this).
 
 ### Choosing the method
 
@@ -493,18 +496,44 @@ around a bot outside the ring), `SweatyBotsClimbStopPath` (the earlier climb beh
 
 ## Ports
 
-| Mode | Port |
+| Mode | Default port |
 |---|---|
 | Solos | 7777/udp |
 | Playground | 7778/udp |
 | Duos | 7779/udp |
 | Trios | 7780/udp |
 | Squads | 7781/udp |
-| Zero Wait warm spare method (kit 2026.10.10.2+) | the mode's port + 100: 7877, 7879, 7880, 7881/udp |
+| Zero Wait warm spare method (kit 2026.10.10.2+) | the mode's spare port, by default its port + 100: 7877, 7879, 7880, 7881/udp |
 | Linux web admin page | 8080/tcp (only for you) |
 
 Only the modes you run need their port, and a spare's port only with the warm spare method and Zero Wait on for that mode. Community servers must be reachable from the internet on these
 ports; open them in your provider's firewall too.
+
+### Changing the game ports (Linux)
+
+The Linux installer and container take the game ports from the server kit's `ds-instances.json`.
+Two environment variables change them. With neither set, the file keeps its ports (7777-7781 on a
+new server).
+
+- `RV_PORT_BASE=<first port>` gives solo, playground, duos, trios and squads that port and the next
+  four, in that order. For example, `RV_PORT_BASE=8000` gives 8000, 8001, 8002, 8003 and 8004.
+- `RV_PORTS=<mode>=<port>,...` names a port per mode and wins over `RV_PORT_BASE` for the mode it
+  names. For example, `RV_PORTS=solo=9000,duos=9001`.
+
+Both work with the installer (`sudo RV_PORT_BASE=8000 bash install.sh`) and as container variables
+(`-e RV_PORTS=solo=9000,duos=9001`). They are checked before anything is installed or started: each
+port must be 1-65535, no two modes may share a port, and a warm spare may not land on another
+mode's port. The container writes the result into `ds-instances.json`, the mode entries and any
+spare entries the file has, before the supervisor starts.
+
+The warm spares follow the mode's spare offset: the file's `warmSparePortOffset` (100 by default),
+or, where the file names a spare entry, the distance that entry has from its mode's port. So
+`RV_PORT_BASE=8000` on a standard kit gives spares 8100, 8102, 8103 and 8104; with the default
+ports they are 7877, 7879, 7880 and 7881.
+
+A server behind NAT must forward the same UDP ports to it, main ports and warm spare ports alike.
+The installer, when run as root, opens the ports it will use in the local firewall (firewalld or
+ufw), but the provider's firewall or NAT rules are outside its reach.
 
 ---
 
@@ -527,8 +556,8 @@ sudo rm -rf /srv/rvserver          # deletes the server's files and registration
 ## Problems
 
 - **Linux: the server does not appear / stays offline.** Check the log: `sudo podman logs rvserver`.
-  Right after setup, the kit download takes a while. Check that UDP 7777-7781 is open in your
-  provider's firewall.
+  Right after setup, the kit download takes a while. Check that the game ports (UDP 7777-7781 by
+  default, or the ones you chose) are open in your provider's firewall.
 - **"SETUP STOPPED"**: the reason is on the same line. Fix it and run the setup again (Windows:
   `Setup-RVServer.bat`; Linux: the installer or the web setup form).
 - **Private server: setup code refused.** Codes are valid for 30 minutes; get a new one in the launcher.

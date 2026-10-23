@@ -13,6 +13,9 @@
 # RV_DATA_DIR, RV_EDITION=community|private, RV_SETUP_CODE, RV_CONTACT, RV_NAME, RV_PUBLIC_IP,
 # RV_MODES=solo,duos,..., RV_SWAP=solo,... (Zero Wait modes), RV_ZEROWAIT=pairs|spare (Zero Wait
 # method), RV_KSM=on|off, RV_WEBUI=on|off).
+# The game ports are 7777-7781 unless RV_PORT_BASE=<first port> (the modes get it and the next
+# four) or RV_PORTS=<mode>=<port>,... says otherwise; the warm spares follow the mode's spare
+# offset (100 by default).
 # With RV_UNATTENDED=1 it never asks: unanswered questions take the suggested answer.
 set -euo pipefail
 
@@ -26,6 +29,7 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 warn() { printf '\033[33m  %s\033[0m\n' "$*"; }
 die() { printf '\033[31m\n  %s\033[0m\n\n' "$*" >&2; exit 1; }
+join_list() { local IFS="$1"; shift; echo "$*"; }
 UNATTENDED=0; [[ "${RV_UNATTENDED:-}" =~ ^(1|yes|true|on)$ ]] && UNATTENDED=1
 ask() {   # ask "question" "default" ["preset answer"] -> REPLY
     local q="$1" def="${2:-}" preset="${3:-}"
@@ -139,6 +143,107 @@ ALREADY=0
 
 ENV_ARGS=()
 
+# ---------------------------------------------------------------- game ports
+# The kit's ds-instances.json is what the supervisor starts the modes on. An existing server's ports
+# are read here so that a rerun opens the same ones. RV_PORT_BASE=<first port> gives solo,
+# playground, duos, trios, squads that port and the next four, in that order; RV_PORTS=<mode>=<port>,...
+# names a port per mode and wins over RV_PORT_BASE for that mode. The warm spares keep the mode's
+# spare offset (100 by default, or what the existing file says).
+declare -A PORT_OF=([solo]=7777 [playground]=7778 [duos]=7779 [trios]=7780 [squads]=7781)
+declare -A SPARE_OF=([solo]=100 [duos]=100 [trios]=100 [squads]=100)
+INSTANCES_FILE="$DATA/server/Rumbleverse/Binaries/Win64/RVSupervisor/ds-instances.json"
+if [ -f "$INSTANCES_FILE" ]; then
+    # One object per instance: id first, then port, then spareOf on a spare. The kit writes the file
+    # with indentation; a compact file falls back to the ports above.
+    declare -A FILE_PORT=() FILE_SPAREOF=()
+    while read -r _id _port _spareof; do
+        [[ "$_port" =~ ^0*[0-9]{1,5}$ ]] || continue
+        _pn=$((10#${_port})); { [ "$_pn" -ge 1 ] && [ "$_pn" -le 65535 ]; } || continue
+        FILE_PORT[$_id]=$_pn
+        [ "$_spareof" != "-" ] && FILE_SPAREOF[$_id]=$_spareof
+    done < <(awk '
+        /^[[:space:]]*}/ {
+            if (id != "" && port != "") print id, port, (spareof == "" ? "-" : spareof);
+            id=""; port=""; spareof=""; next
+        }
+        /"id"[[:space:]]*:/ { id=$0; sub(/^.*"id"[[:space:]]*:[[:space:]]*"/,"",id); sub(/".*$/,"",id) }
+        /"port"[[:space:]]*:/ && port == "" { port=$0; sub(/^.*"port"[[:space:]]*:[[:space:]]*/,"",port); sub(/[^0-9].*$/,"",port) }
+        /"spareOf"[[:space:]]*:/ { spareof=$0; sub(/^.*"spareOf"[[:space:]]*:[[:space:]]*"/,"",spareof); sub(/".*$/,"",spareof) }
+    ' "$INSTANCES_FILE")
+    for _i in 0 1 2 3 4; do
+        _m=${MODES_ALL[$_i]}; _main="${_m}-01"
+        if [ -n "${FILE_PORT[$_main]:-}" ]; then PORT_OF[$_m]=${FILE_PORT[$_main]}; fi
+    done
+    _off="$(sed -n 's/.*"warmSparePortOffset"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$INSTANCES_FILE" | head -n 1)"
+    if [[ "$_off" =~ ^0*[0-9]{1,5}$ ]] && [ $((10#${_off})) -gt 0 ]; then
+        for _m in solo duos trios squads; do SPARE_OF[$_m]=$((10#${_off})); done
+    fi
+    # An explicit spare entry keeps the distance it has from its mode's port.
+    for _sid in "${!FILE_PORT[@]}"; do
+        _of="${FILE_SPAREOF[$_sid]:-}"
+        _m=""
+        case "$_of" in
+            solo-01) _m=solo ;; duos-01) _m=duos ;; trios-01) _m=trios ;; squads-01) _m=squads ;;
+            *) case "$_sid" in
+                   solo-01-spare) _m=solo ;; duos-01-spare) _m=duos ;;
+                   trios-01-spare) _m=trios ;; squads-01-spare) _m=squads ;;
+               esac ;;
+        esac
+        if [ -n "$_m" ] && [ -n "${FILE_PORT[${_m}-01]:-}" ]; then
+            _sp=${FILE_PORT[$_sid]}; _mp=${FILE_PORT[${_m}-01]}
+            SPARE_OF[$_m]=$(( _sp - _mp ))
+        fi
+    done
+fi
+if [ -n "${RV_PORT_BASE:-}" ] || [ -n "${RV_PORTS:-}" ]; then
+    if [ -n "${RV_PORT_BASE:-}" ]; then
+        [[ "$RV_PORT_BASE" =~ ^0*[0-9]{1,5}$ ]] || die "RV_PORT_BASE must be a number from 1 to 65535."
+        _base=$((10#$RV_PORT_BASE))
+        { [ "$_base" -ge 1 ] && [ $((_base + 4)) -le 65535 ]; } || die "RV_PORT_BASE must leave room for 5 modes below 65535."
+        for _i in 0 1 2 3 4; do PORT_OF[${MODES_ALL[$_i]}]=$((_base + _i)); done
+    fi
+    if [ -n "${RV_PORTS:-}" ]; then
+        declare -A GIVEN=()
+        _count=0
+        while IFS= read -r _item; do
+            _item="${_item//[[:space:]]/}"
+            [ -n "$_item" ] || continue
+            [[ "$_item" == *=* ]] || die "RV_PORTS: use <mode>=<port> (for example solo=7777)."
+            _key="${_item%%=*}"; _val="${_item#*=}"; _key="${_key,,}"
+            _mode=""
+            for _m in "${MODES_ALL[@]}"; do
+                [ "$_m" = "$_key" ] && _mode="$_m"
+                [ "${_m}-01" = "$_key" ] && _mode="$_m"
+            done
+            [ -n "$_mode" ] || die "RV_PORTS: unknown mode \"$_key\" (use solo, playground, duos, trios, squads)."
+            [ -z "${GIVEN[$_mode]:-}" ] || die "RV_PORTS: $_mode is given more than once."
+            [[ "$_val" =~ ^0*[0-9]{1,5}$ ]] || die "RV_PORTS: $_mode=$_val is not a port number."
+            _num=$((10#${_val}))
+            { [ "$_num" -ge 1 ] && [ "$_num" -le 65535 ]; } || die "RV_PORTS: $_mode=$_val is outside 1-65535."
+            for _k in "${!GIVEN[@]}"; do
+                [ "${PORT_OF[$_k]}" = "$_num" ] && die "RV_PORTS: port $_num is used for both $_k and $_mode."
+            done
+            GIVEN[$_mode]=1; PORT_OF[$_mode]=$_num; _count=$((_count + 1))
+        done <<< "${RV_PORTS//,/$'\n'}"
+        [ "$_count" -gt 0 ] || die "RV_PORTS lists no <mode>=<port> entries."
+    fi
+    [ -n "${RV_PORT_BASE:-}" ] && ENV_ARGS+=(RV_PORT_BASE="$RV_PORT_BASE")
+    [ -n "${RV_PORTS:-}" ] && ENV_ARGS+=(RV_PORTS="$RV_PORTS")
+fi
+# The supervisor refuses duplicate ports and so does the container: catch them before installing.
+_seen=""
+for _m in "${MODES_ALL[@]}"; do
+    _p=${PORT_OF[$_m]}
+    case " $_seen " in *" $_p "*) die "The game ports have a duplicate: UDP $_p." ;; esac
+    _seen="$_seen $_p"
+done
+for _m in solo duos trios squads; do
+    _p=$(( ${PORT_OF[$_m]} + ${SPARE_OF[$_m]} ))
+    { [ "$_p" -ge 1 ] && [ "$_p" -le 65535 ]; } || die "The warm spare port for $_m would be $_p, outside 1-65535."
+    case " $_seen " in *" $_p "*) die "The warm spare port for $_m (UDP $_p) is also a game port." ;; esac
+    _seen="$_seen $_p"
+done
+
 # ---------------------------------------------------------------- server kind
 if [ "$ALREADY" = 1 ]; then
     bold "5. Server already set up"
@@ -221,7 +326,8 @@ fi
 # ---------------------------------------------------------------- Zero Wait
 # Two methods. Server pairs (the default for now): one port, the container forwards it between two
 # servers and switches after the round's match reports are uploaded. Warm spare: the kit's second
-# server on the mode's port + 100, both registered, the backend sends players to the idle one.
+# server on the mode's spare port (by default the mode's port + 100), both registered, the backend
+# sends players to the idle one.
 # Server pairs need IP forwarding and the network rights given here when installed as root.
 bold "8. Zero Wait (no waiting between matches)"
 case "${RV_ZEROWAIT:-}" in
@@ -231,8 +337,8 @@ esac
 info "Two ways to keep the next match ready:"
 info "  1) Server pairs (default): two servers, the mode's own port. The container switches the"
 info "     port after the round's match reports are uploaded."
-info "  2) Warm spare: a second server on the mode's port + 100. Both report to the backend, which"
-info "     sends players to the one in its lobby."
+info "  2) Warm spare: a second server on the mode's spare port (by default the mode's port + 100)."
+info "     Both report to the backend, which sends players to the one in its lobby."
 case "${RV_ZEROWAIT:-}" in pairs) PRE_METHOD=1 ;; spare) PRE_METHOD=2 ;; *) PRE_METHOD="" ;; esac
 ask "Choose 1 or 2" "1" "$PRE_METHOD"
 case "$REPLY" in
@@ -253,7 +359,16 @@ if true; then
         info "Normally a mode needs a minute or two between matches while its server restarts. With Zero Wait"
         info "a second server of that mode is already started and waiting, so players queue straight into the"
         info "next match. It needs memory for one more server of that mode (about $((EACH / 1000)).$(( (EACH % 1000) / 100 )) GB)."
-        [ "$METHOD" = spare ] && info "With the warm spare method that server's port must also be open: the mode's port + 100 (Solos 7877, Duos 7879, Trios 7880, Squads 7881)."
+        if [ "$METHOD" = spare ]; then
+            _hint=""
+            for _i in 0 1 2 3 4; do
+                _m=${MODES_ALL[$_i]}
+                case "$_m" in solo|duos|trios|squads)
+                    _hint="${_hint:+$_hint, }${MODE_LABEL[$_i]} $(( ${PORT_OF[$_m]} + ${SPARE_OF[$_m]} ))" ;;
+                esac
+            done
+            info "With the warm spare method that server's port must also be open: ${_hint}."
+        fi
         # Suggest the battle royale modes (in the order chosen) that still fit next to the modes chosen.
         LEFT=$(( USABLE - FIRST - (COUNT - 1) * EACH )); DEF_SWAP=""
         for m in solo duos trios squads; do
@@ -310,17 +425,46 @@ USE_WEB=1; yesno "Turn on the web admin page?" "y" "$(onoff "${RV_WEBUI:-}")" ||
 echo
 
 # ---------------------------------------------------------------- firewall
+# The ports this box uses: the modes chosen on a new server, every mode on an existing one (its
+# choice lives in its own files), and the warm spares only with the warm spare method.
+FW_MODES=()
+if [ -n "${MODES:-}" ]; then IFS=, read -r -a FW_MODES <<< "$MODES"; else FW_MODES=("${MODES_ALL[@]}"); fi
+MAIN_PORTS=()
+for _m in "${FW_MODES[@]}"; do [ -n "${PORT_OF[$_m]:-}" ] && MAIN_PORTS+=("${PORT_OF[$_m]}"); done
+if [ ${#MAIN_PORTS[@]} -gt 0 ]; then
+    mapfile -t MAIN_PORTS < <(printf '%s\n' "${MAIN_PORTS[@]}" | sort -n -u)
+fi
+MAIN_TEXT="$(join_list ', ' "${MAIN_PORTS[@]}")"
+SPARE_PORTS=()
+if [ "$METHOD" = spare ]; then
+    if [ -n "${SWAP:-}" ]; then IFS=, read -r -a _swap <<< "$SWAP"; else _swap=(solo duos trios squads); fi
+    for _m in "${_swap[@]}"; do
+        case "$_m" in solo|duos|trios|squads) SPARE_PORTS+=($(( ${PORT_OF[$_m]} + ${SPARE_OF[$_m]} ))) ;; esac
+    done
+    if [ ${#SPARE_PORTS[@]} -gt 0 ]; then
+        mapfile -t SPARE_PORTS < <(printf '%s\n' "${SPARE_PORTS[@]}" | sort -n -u)
+    fi
+fi
+SPARE_TEXT=""
+if [ ${#SPARE_PORTS[@]} -gt 0 ]; then SPARE_TEXT="$(join_list ', ' "${SPARE_PORTS[@]}")"; fi
 OPEN_PORTS=""
 [ "$USE_WEB" = 1 ] && OPEN_PORTS="$WEB_PORT/tcp"
 if [ "$IS_ROOT" = 1 ]; then
     if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-        firewall-cmd -q --permanent --add-port=7777-7781/udp; firewall-cmd -q --permanent --add-port=7877-7881/udp
+        for _p in "${MAIN_PORTS[@]}"; do firewall-cmd -q --permanent --add-port="$_p/udp"; done
+        if [ ${#SPARE_PORTS[@]} -gt 0 ]; then
+            for _p in "${SPARE_PORTS[@]}"; do firewall-cmd -q --permanent --add-port="$_p/udp"; done
+        fi
         [ "$USE_WEB" = 1 ] && firewall-cmd -q --permanent --add-port="$WEB_PORT/tcp"
-        firewall-cmd -q --reload; info "Firewall (firewalld): opened UDP 7777-7781, 7877-7881 (Zero Wait)${OPEN_PORTS:+ and $OPEN_PORTS}."
+        firewall-cmd -q --reload
+        info "Firewall (firewalld): opened UDP ${MAIN_TEXT}${SPARE_TEXT:+, and ${SPARE_TEXT} for Zero Wait}${OPEN_PORTS:+ and $OPEN_PORTS}."
     elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw allow 7777:7781/udp >/dev/null; ufw allow 7877:7881/udp >/dev/null
+        for _p in "${MAIN_PORTS[@]}"; do ufw allow "$_p/udp" >/dev/null; done
+        if [ ${#SPARE_PORTS[@]} -gt 0 ]; then
+            for _p in "${SPARE_PORTS[@]}"; do ufw allow "$_p/udp" >/dev/null; done
+        fi
         [ "$USE_WEB" = 1 ] && ufw allow "$WEB_PORT/tcp" >/dev/null
-        info "Firewall (ufw): opened UDP 7777-7781, 7877-7881 (Zero Wait)${OPEN_PORTS:+ and $OPEN_PORTS}."
+        info "Firewall (ufw): opened UDP ${MAIN_TEXT}${SPARE_TEXT:+, and ${SPARE_TEXT} for Zero Wait}${OPEN_PORTS:+ and $OPEN_PORTS}."
     fi
 fi
 
@@ -463,7 +607,7 @@ info "Terminal menu:    $ENGINE exec -it $NAME rv menu"
 if [ -n "$QUADLET" ]; then
     if [ "$IS_ROOT" = 1 ]; then info "Service:          systemctl status $NAME"; else info "Service:          systemctl --user status $NAME"; fi
 fi
-info "Game ports:       UDP 7777-7781, and 7877-7881 for Zero Wait (also open them in your provider's firewall, if it has one)"
+info "Game ports:       UDP ${MAIN_TEXT}${SPARE_TEXT:+, and ${SPARE_TEXT} for Zero Wait (warm spare)} (also open them in your provider's firewall, if it has one)"
 echo
 if [ "${EDITION:-}" = community ]; then
     info "Your community server waits for approval by the rVclient admins. Nothing else to do."
