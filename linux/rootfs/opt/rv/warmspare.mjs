@@ -1,8 +1,9 @@
 // Zero Wait with the server kit's warm spare (kit 2026.10.10.1 and newer).
 //
 // The kit's supervisor (ds-supervisor.js) gives each Battle Royale server a twin "<id>-spare" on the
-// mode's port + 100 (7777 -> 7877), with the same Config ini. Both are ordinary game servers: each sends
-// its own heartbeat to the backend with its own port, and the node agent registers both. Matchmaking sends
+// mode's spare port, by default the mode's port + 100 (7777 -> 7877), with the same Config ini. Both
+// are ordinary game servers: each sends its own heartbeat to the backend with its own port, and the
+// node agent registers both. Matchmaking sends
 // players to whichever is in its lobby, so while one plays a match or restarts after it, the other takes
 // the next players. Per mode, WarmSpare=false in Config.<mode>.ini turns the spare off (it closes after its
 // current match); it only starts with warmSpareMinFreeMb (default 2500) of free memory.
@@ -12,11 +13,10 @@
 // without the warm spare use the server pairs (pairs.mjs) instead.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { SUP_DIR, WIN64, INSTANCES, MODES, readJson, writeJson, readIni, setIniValues, readState, updateState } from './lib.mjs';
+import { SUP_DIR, WIN64, INSTANCES, MODES, SPARE_MODE_KEYS, readJson, writeJson, readIni, setIniValues, readState, updateState, sparePort } from './lib.mjs';
 
-export const SPARE_PORT_OFFSET = 100;
 export const isSpare = id => /-spare$/.test(String(id || ''));
-const BR = new Set(['solo', 'duos', 'trios', 'squads']);
+const BR = new Set(SPARE_MODE_KEYS);
 export const brModes = () => MODES.filter(m => BR.has(m.key));
 
 // Does the installed kit's supervisor run warm spares?
@@ -118,6 +118,6 @@ export async function spareCli(args) {
     for (const i of await ops.instances()) {
         if (!on.includes(i.mode)) continue;
         const s = i.spare;
-        console.log(`${i.label}: server ${i.id} (port ${i.port}) ${i.state}, ${i.players ?? 0} player(s) | spare ${s ? `${s.id} (port ${s.port}) ${s.state}, ${s.players} player(s)` : 'not started yet (it needs 2.5 GB free memory to start)'}`);
+        console.log(`${i.label}: server ${i.id} (port ${i.port}) ${i.state}, ${i.players ?? 0} player(s) | spare ${s ? `${s.id} (port ${s.port}) ${s.state}, ${s.players} player(s)` : `not started yet (its port is ${sparePort(i.mode)}; it needs 2.5 GB free memory to start)`}`);
     }
 }

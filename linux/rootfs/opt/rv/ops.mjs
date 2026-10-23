@@ -3,14 +3,14 @@
 // Everything goes through the places the Windows "rV Modes (server)" app uses: the supervisor's
 // local admin API, modes.json (modes on/off) and Config.<mode>.ini (game settings).
 import { pairStatus, restartActive, swapModes, setSwapMode } from './pairs.mjs';
-import { isSpare, warmSpareModes, setWarmSpare, selectedSpareModes, SPARE_PORT_OFFSET } from './warmspare.mjs';
+import { isSpare, warmSpareModes, setWarmSpare, selectedSpareModes } from './warmspare.mjs';
 import { requestedMethod, activePlan, setMethod } from './zerowait.mjs';
 import { existsSync, statSync, openSync, readSync, closeSync, readFileSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
-import { DATA, INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, readJson, writeJson, readState, updateState, isConfigured, kitVersion,
-    readIni, setIniValues, gameProcesses } from './lib.mjs';
+import { DATA, INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, SPARE_MODE_KEYS, readJson, writeJson, readState, updateState, isConfigured, kitVersion,
+    readIni, setIniValues, gameProcesses, modePort, sparePort, sparePorts, spareOffset } from './lib.mjs';
 
 export const CONTROL_SOCK = join(STATE_DIR, 'control.sock');
 
@@ -191,18 +191,20 @@ export async function instances() {
     const all = (await admin('/instances')).instances || [];
     const procs = gameProcesses();
     const modes = readJson(modesFile(), {});
+    const inst = readJson(INSTANCES, null);
     // Warm spares (warmspare.mjs) are shown with their mode: i.spare = the spare's state.
     const list = all.filter(i => !isSpare(i.id));
     for (const s of all.filter(i => isSpare(i.id))) {
         const main = list.find(i => i.id === s.spareOf || `${i.id}-spare` === s.id);
         const p = procs.find(x => x.instance === s.id);
-        if (main) main.spare = { id: s.id, port: s.port, running: s.running, players: s.players ?? 0, state: stateLabel(s),
+        if (main) main.spare = { id: s.id, port: Number.isInteger(s.port) ? s.port : sparePort(s.mode, inst), running: s.running, players: s.players ?? 0, state: stateLabel(s),
             uptimeSec: s.uptimeSec || 0, rssMb: p?.rssMb ?? null, swapMb: p?.swapMb ?? null, restarts: s.restarts, crashes: s.crashes };
     }
     for (const i of list) {
         const p = procs.find(x => x.instance === i.id);
         i.rssMb = p?.rssMb ?? null; i.swapMb = p?.swapMb ?? null;
         i.label = MODES.find(m => m.key === i.mode)?.label || i.mode;
+        if (!Number.isInteger(i.port)) i.port = modePort(i.mode, inst);
         i.modeOn = modes[i.mode] !== false;
         i.state = stateLabel(i);
     }
@@ -350,7 +352,10 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
 export function pairsInfo() {
     const a = activePlan();
     const modes = a.kind === 'spare' ? warmSpareModes() : a.kind === 'pairs' ? swapModes() : [];
-    return { ...a, requestedNow: requestedMethod(), available: a.kind !== 'none', portOffset: SPARE_PORT_OFFSET, modes };
+    const inst = readJson(INSTANCES, null);
+    const spareKey = modes.find(k => SPARE_MODE_KEYS.includes(k)) || SPARE_MODE_KEYS[0];
+    return { ...a, requestedNow: requestedMethod(), available: a.kind !== 'none', portOffset: spareOffset(spareKey, inst),
+        sparePorts: sparePorts(inst), modes };
 }
 export const setPair = (mode, on) => {
     const kind = pairsInfo().kind;

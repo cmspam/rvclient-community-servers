@@ -57,6 +57,185 @@ export function updateInstances(patch) {
 // written before the supervisor is started.
 export function setKitWarmSpare(on) { return updateInstances({ warmSpare: !!on }); }
 
+// ---- game ports ----
+// The supervisor starts every mode from the kit's ds-instances.json, so that file is the source of
+// truth for the ports. MODES holds the kit defaults, used when the file or an entry is absent.
+export const SPARE_PORT_OFFSET = 100;   // older kits: a warm spare is the mode's port + this
+export const PORT_MIN = 1;
+export const PORT_MAX = 65535;
+export const SPARE_MODE_KEYS = ['solo', 'duos', 'trios', 'squads'];
+const SPARE_MODES = new Set(SPARE_MODE_KEYS);
+const validPort = p => Number.isInteger(p) && p >= PORT_MIN && p <= PORT_MAX;
+const isSpareId = id => /-spare$/.test(String(id || ''));
+
+export function modeByKey(key) {
+    const k = String(key ?? '').toLowerCase();
+    return MODES.find(m => m.key === k || m.id === k) || null;
+}
+function instanceList(instances) {
+    return Array.isArray(instances?.instances) ? instances.instances.filter(i => i && typeof i === 'object') : [];
+}
+// The ds-instances.json entry of a mode: by its instance id, or by a "mode" field where a kit
+// writes one. A warm spare entry is never taken for the mode itself.
+export function modeInstance(mode, instances = readJson(INSTANCES, null)) {
+    const m = typeof mode === 'string' ? modeByKey(mode) : mode;
+    if (!m) return null;
+    const list = instanceList(instances);
+    return list.find(i => i.id === m.id)
+        || list.find(i => !i.spareOf && !isSpareId(i.id) && String(i.mode || '').toLowerCase() === m.key)
+        || null;
+}
+export function modePort(mode, instances = readJson(INSTANCES, null)) {
+    const m = typeof mode === 'string' ? modeByKey(mode) : mode;
+    if (!m) throw new Error(`Unknown mode "${mode}" (solo, playground, duos, trios, squads).`);
+    const p = modeInstance(m, instances)?.port;
+    return validPort(p) ? p : m.port;
+}
+// The mode's warm spare entry, where the file names one: "<id>-spare" or an entry that points at
+// the mode with spareOf.
+export function spareInstance(mode, instances = readJson(INSTANCES, null)) {
+    const m = typeof mode === 'string' ? modeByKey(mode) : mode;
+    if (!m) return null;
+    const id = modeInstance(m, instances)?.id || m.id;
+    const list = instanceList(instances);
+    return list.find(i => i.spareOf === id) || list.find(i => i.id === `${id}-spare`) || null;
+}
+// How far the spare's port is from the mode's. An explicit spare entry keeps the distance the file
+// gives it; otherwise the file's warmSparePortOffset is used, and 100 is the fallback for older kits.
+export function spareOffset(mode, instances = readJson(INSTANCES, null)) {
+    const m = typeof mode === 'string' ? modeByKey(mode) : mode;
+    if (!m) throw new Error(`Unknown mode "${mode}" (solo, playground, duos, trios, squads).`);
+    const explicit = spareInstance(m, instances), off = instances?.warmSparePortOffset;
+    if (validPort(explicit?.port)) return explicit.port - modePort(m, instances);
+    return Number.isInteger(off) && off > 0 ? off : SPARE_PORT_OFFSET;
+}
+export function sparePort(mode, instances = readJson(INSTANCES, null)) {
+    const m = typeof mode === 'string' ? modeByKey(mode) : mode;
+    if (!m) throw new Error(`Unknown mode "${mode}" (solo, playground, duos, trios, squads).`);
+    const port = modePort(m, instances) + spareOffset(m, instances);
+    return validPort(port) ? port : modePort(m, instances) + SPARE_PORT_OFFSET;
+}
+export function modePorts(instances = readJson(INSTANCES, null)) {
+    return Object.fromEntries(MODES.map(m => [m.key, modePort(m, instances)]));
+}
+export function sparePorts(instances = readJson(INSTANCES, null)) {
+    return Object.fromEntries(SPARE_MODE_KEYS.map(k => [k, sparePort(k, instances)]));
+}
+
+// ---- install-time port override ----
+// RV_PORT_BASE=<first port>: the modes get it and the next ports, in MODES order.
+// RV_PORTS=<mode>=<port>,...: a port per named mode; a named mode wins over RV_PORT_BASE.
+// Both are checked before anything is written. With neither set the file is left untouched.
+function portNumber(raw, what) {
+    const s = String(raw ?? '').trim();
+    if (!/^\d+$/.test(s)) throw new Error(`${what}: "${s}" is not a port number (${PORT_MIN}-${PORT_MAX}).`);
+    const n = Number(s);
+    if (!Number.isInteger(n) || n < PORT_MIN || n > PORT_MAX) throw new Error(`${what}: ${s} is outside ${PORT_MIN}-${PORT_MAX}.`);
+    return n;
+}
+export function parsePortOverride(env = process.env) {
+    const baseRaw = String(env.RV_PORT_BASE ?? '').trim();
+    const portsRaw = String(env.RV_PORTS ?? '').trim();
+    if (!baseRaw && !portsRaw) return null;
+    const ports = Object.create(null), seen = new Map(), given = new Set();
+    if (portsRaw) {
+        for (const part of portsRaw.split(',')) {
+            const item = part.trim();
+            if (!item) continue;
+            const eq = item.indexOf('=');
+            if (eq <= 0) throw new Error(`RV_PORTS: "${item}" is not <mode>=<port> (for example solo=7777).`);
+            const name = item.slice(0, eq).trim().toLowerCase();
+            const m = modeByKey(name);
+            if (!m) throw new Error(`RV_PORTS: unknown mode "${name}" (use solo, playground, duos, trios, squads).`);
+            if (given.has(m.key)) throw new Error(`RV_PORTS: ${m.key} is given more than once.`);
+            const p = portNumber(item.slice(eq + 1), `RV_PORTS ${m.key}`);
+            if (seen.has(p)) throw new Error(`RV_PORTS: port ${p} is used for both ${seen.get(p)} and ${m.key}.`);
+            given.add(m.key);
+            seen.set(p, m.key);
+            ports[m.key] = p;
+        }
+        if (!given.size) throw new Error('RV_PORTS lists no <mode>=<port> entries.');
+    }
+    let base = null;
+    if (baseRaw) {
+        base = portNumber(baseRaw, 'RV_PORT_BASE');
+        if (base + MODES.length - 1 > PORT_MAX) throw new Error(`RV_PORT_BASE: ${base} leaves no room for ${MODES.length} modes below ${PORT_MAX}.`);
+    }
+    return { base, ports };
+}
+// The final ports of every mode from an override and the file, with the warm spares derived the
+// same way. Throws when a main or spare port repeats another, or is used by another instance the
+// file defines.
+export function resolvePorts(override, instances = readJson(INSTANCES, null)) {
+    if (!override) return null;
+    const ports = {}, spares = {}, offsets = {};
+    MODES.forEach((m, i) => {
+        ports[m.key] = override.ports[m.key] ?? (override.base != null ? override.base + i : modePort(m, instances));
+    });
+    const use = new Map();
+    const claim = (port, what) => {
+        if (!validPort(port)) throw new Error(`${what} would use UDP ${port}, outside ${PORT_MIN}-${PORT_MAX}.`);
+        if (use.has(port)) throw new Error(`${what} would use UDP ${port}, already used by ${use.get(port)}.`);
+        use.set(port, what);
+    };
+    for (const m of MODES) claim(ports[m.key], `${m.key} (main)`);
+    const rewritten = new Set();
+    for (const m of MODES) {
+        const main = modeInstance(m, instances), explicit = spareInstance(m, instances);
+        if (main?.id) rewritten.add(main.id);
+        if (explicit?.id) rewritten.add(explicit.id);
+        if (!SPARE_MODES.has(m.key) && !explicit) continue;
+        offsets[m.key] = spareOffset(m, instances);
+        spares[m.key] = ports[m.key] + offsets[m.key];
+        claim(spares[m.key], `${m.key} (warm spare)`);
+    }
+    // Other instances keep their own ports; the supervisor refuses a duplicate too, so check them.
+    const extra = [...instanceList(instances), ...(Array.isArray(instances?._moreModesLater) ? instances._moreModesLater : [])];
+    for (const i of extra) {
+        if (!i || rewritten.has(i.id) || !validPort(i.port)) continue;
+        claim(i.port, `${i.id || 'another instance'} in ds-instances.json`);
+    }
+    return { ports, spares, offsets };
+}
+// The same instances with the resolved ports written into the mode entries and the spare entries
+// the file already has. Nothing is added: a spare the file does not name is the supervisor's own.
+export function rewritePorts(instances, resolved) {
+    const next = JSON.parse(JSON.stringify(instances));
+    const changes = [];
+    const set = (entry, port, kind) => {
+        if (!entry || entry.port === port) return;
+        changes.push({ id: entry.id, kind, from: entry.port, to: port });
+        entry.port = port;
+    };
+    for (const m of MODES) {
+        set(modeInstance(m, next), resolved.ports[m.key], 'main');
+        if (resolved.spares[m.key] !== undefined) set(spareInstance(m, next), resolved.spares[m.key], 'spare');
+    }
+    return { next, changes };
+}
+export function applyPortOverride(instances, env = process.env) {
+    const override = parsePortOverride(env);
+    if (!override) return null;
+    const resolved = resolvePorts(override, instances);
+    const { next, changes } = rewritePorts(instances, resolved);
+    return { next, changes, ports: resolved.ports, spares: resolved.spares };
+}
+// Called after the kit writes ds-instances.json and before the supervisor starts. Returns null when
+// no override is set or the server is not set up yet.
+export function applyPortOverrideFromEnv(log = () => {}) {
+    const instances = readJson(INSTANCES, null);
+    if (!instances) return null;
+    let r;
+    try { r = applyPortOverride(instances, process.env); }
+    catch (e) { throw new Error(`Port override: ${e.message}`); }
+    if (!r) return null;
+    if (r.changes.length) {
+        writeJson(INSTANCES, r.next, 0o644);
+        for (const c of r.changes) log(`${c.id || 'instance'}: ${c.kind} port ${c.from ?? '?'} -> ${c.to}`);
+    }
+    return r;
+}
+
 export const gameInstalled = () => existsSync(join(WIN64, GAME_EXE));
 export const kitInstalled = () => existsSync(join(SERVER, 'rv-server.version'));
 export const isConfigured = () => {

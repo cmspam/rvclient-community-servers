@@ -3,7 +3,7 @@
 //   podman exec -it rvserver rv menu        interactive menu
 //   podman exec rvserver rv <command> ...   single commands (see HELP)
 import { createInterface } from 'node:readline/promises';
-import { MODES, isConfigured } from './lib.mjs';
+import { MODES, SPARE_MODE_KEYS, isConfigured, modePort, sparePort } from './lib.mjs';
 import * as ops from './ops.mjs';
 
 export const HELP = `Rumbleverse server - terminal admin
@@ -45,12 +45,20 @@ async function printStatus() {
     const zw = ops.pairsInfo();
     console.log(`Zero Wait ${zw.kind}${zw.pending ? ' (a method change is pending)' : ''}${zw.warned ? ` - ${zw.warned}` : zw.reason ? ` - ${zw.reason}` : ''}`);
     let list = [];
-    try { list = await ops.instances(); } catch (e) { console.log(e.message); return; }
+    try { list = await ops.instances(); } catch (e) {
+        console.log(e.message);
+        console.log(`  Game ports: ${MODES.map(m => `${m.label} ${modePort(m)}/udp`).join(', ')}`);
+        return;
+    }
     console.log('');
     console.log(`  ${'Mode'.padEnd(11)} ${'Port'.padEnd(5)} ${'On'.padEnd(4)} ${'State'.padEnd(18)} ${'Players'.padEnd(8)} ${'Uptime'.padEnd(8)} ${'Memory'.padEnd(9)} Restarts/crashes`);
     for (const i of list) {
         console.log(`  ${i.label.padEnd(11)} ${String(i.port).padEnd(5)} ${(i.modeOn ? 'yes' : 'no').padEnd(4)} ${i.state.padEnd(18)} ${String(i.players ?? 0).padEnd(8)} ${up(i.uptimeSec).padEnd(8)} ${gb(i.rssMb).padEnd(9)} ${i.restarts}/${i.crashes}`);
     }
+    if (zw.kind === 'spare') console.log(`  Warm spare ports: ${SPARE_MODE_KEYS.map(k => {
+        const m = MODES.find(x => x.key === k);
+        return `${m.label} ${sparePort(m)}/udp`;
+    }).join(', ')}`);
     const y = ops.system();
     console.log(`\nMemory available ${gb(y.memAvailMb)} of ${gb(y.memTotalMb)}   load ${y.load.join(' / ')} (${y.cpus} CPUs)` +
         (y.disk ? `   disk free ${y.disk.freeGb} GB` : ''));

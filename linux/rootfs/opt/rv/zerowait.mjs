@@ -3,8 +3,9 @@
 //   pairs  the old way: two game servers of the mode on the mode's own port, one connected at a
 //          time; this container forwards the port and switches it after the round's match reports
 //          are uploaded (pairs.mjs). Needs NET_ADMIN, SYS_ADMIN, IP forwarding and a default route.
-//   spare  the server kit's warm spare: a second server on the mode's port + 100, both registered
-//          with the backend, and matchmaking sends players to the one in its lobby (warmspare.mjs).
+//   spare  the server kit's warm spare: a second server on the mode's spare port (by default the
+//          mode's port + 100), both registered with the backend, and matchmaking sends players to
+//          the one in its lobby (warmspare.mjs).
 //
 // One method for the whole server. The requested method is the owner's setting (web page,
 // `rv swap method`, or RV_ZEROWAIT on a server's first start). The applied plan is written to

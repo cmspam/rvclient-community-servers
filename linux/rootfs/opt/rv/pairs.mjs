@@ -43,7 +43,7 @@ import fs from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import os from 'node:os';
-import { DATA, SERVER, WIN64, SUP_DIR, INSTANCES, MODES, GAME_EXE, readJson, writeJson, readState, updateState, isPairInstance } from './lib.mjs';
+import { DATA, SERVER, WIN64, SUP_DIR, INSTANCES, MODES, GAME_EXE, readJson, writeJson, readState, updateState, isPairInstance, modePort } from './lib.mjs';
 import { applyAddons } from './addons.mjs';
 import { applyMapOnceConfig } from './maponce.mjs';
 
@@ -214,7 +214,7 @@ export function rules(pairs, active, addr, dev) {
     const all = pairs.flatMap(p => SIDES.map(s => p[s].ip));
     const lines = [];
     for (const p of pairs) {
-        const on = p[active[p.mode.key]], off = p[other(active[p.mode.key])], port = p.mode.port;
+        const on = p[active[p.mode.key]], off = p[other(active[p.mode.key])], port = p.port;
         lines.push({ raw: `iifname "${dev}" ip daddr ${addr} udp dport ${port} notrack`, raw2: `ip saddr { ${p.a.ip}, ${p.b.ip} } udp sport ${port} notrack`,
             dnat: `iifname "${dev}" ip daddr ${addr} udp dport ${port} ip daddr set ${on.ip}`,
             snat: `oifname "${dev}" ip saddr ${on.ip} udp sport ${port} ip saddr set ${addr}`, off: off.ip });
@@ -406,10 +406,10 @@ function createWatch(sv, log) {
 // The mode's instance from the main supervisor's ds-instances.json: arguments, port, game mode, config.
 function instanceArgs(sv) {
     const cfg = readJson(INSTANCES, {}) || {};
-    const d = (cfg.instances || []).find(x => x.id === sv.mode.id) || { port: sv.mode.port, gameMode: MODES.findIndex(m => m.key === sv.mode.key), config: `Config.${sv.mode.key}.ini` };
+    const d = (cfg.instances || []).find(x => x.id === sv.mode.id) || { gameMode: MODES.findIndex(m => m.key === sv.mode.key), config: `Config.${sv.mode.key}.ini` };
     // Like the supervisor's argsFor(), with this server's own instance id (its log files).
     return [...(d.args || cfg.args || ['-log', '-nullrhi', '-nosound']), `-LOG=server-${sv.id}.log`, `-RVInstance=${sv.id}`,
-        `-RVPort=${d.port}`, `-RVGameMode=${d.gameMode}`, ...(d.config ? [`-RVConfig=${d.config}`] : [])];
+        `-RVPort=${modePort(sv.mode.key, cfg)}`, `-RVGameMode=${d.gameMode}`, ...(d.config ? [`-RVConfig=${d.config}`] : [])];
 }
 const kitVersion = () => { try { return fs.readFileSync(join(SERVER, 'rv-server.version'), 'utf8').trim(); } catch { return ''; } };
 
@@ -506,7 +506,7 @@ export function createPairs({ log = console.log } = {}) {
         updateState({ pairedModes: [...running.keys()] });
     };
     const startPair = mode => {
-        const p = { mode, a: server(mode, 'a'), b: server(mode, 'b') };
+        const p = { mode, port: modePort(mode.key, readJson(INSTANCES, null)), a: server(mode, 'a'), b: server(mode, 'b') };
         for (const sd of SIDES) { preparePrefix(p[sd], log); prepareNet(p[sd]); }
         if (!active[mode.key]) active[mode.key] = 'a';
         const ctl = { p, w: { a: createWatch(p.a, log), b: createWatch(p.b, log) }, off: size(p[active[mode.key]].trace), waiting: '', roundOverAt: 0, roundOverPos: 0, endLabel: '', sentAt: 0, sentPos: 0, postedPos: 0, lobbyReturnPos: 0, goneSince: 0, wasUp: false };

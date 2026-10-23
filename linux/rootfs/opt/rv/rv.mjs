@@ -9,7 +9,7 @@
 import net from 'node:net';
 import { rmSync, chmodSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { ensureDirs, isConfigured, readState, updateState, MODES, setKitWarmSpare } from './lib.mjs';
+import { ensureDirs, isConfigured, readState, updateState, MODES, SPARE_MODE_KEYS, setKitWarmSpare, applyPortOverrideFromEnv } from './lib.mjs';
 import { runSetup, optionsFromEnv, detectPublicIp, REGIONS } from './setup.mjs';
 import { createManager } from './manager.mjs';
 import { CONTROL_SOCK, applySettingDefaults, admin, control } from './ops.mjs';
@@ -128,6 +128,8 @@ async function run() {
     }
 
     async function startServers() {
+        const ports = applyPortOverrideFromEnv(msg => log(`[ports] ${msg}`));
+        if (ports) log(`[ports] ${MODES.map(m => `${m.key} ${ports.ports[m.key]}/udp`).join(', ')}; warm spare ${SPARE_MODE_KEYS.map(k => `${k} ${ports.spares[k]}/udp`).join(', ')}`);
         const p = zeroWaitPlan();
         seedTransition(p.kind);
         reportPlan(p);

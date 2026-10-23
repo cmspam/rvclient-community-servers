@@ -439,7 +439,7 @@ $('tModes').onchange = e => {
   const c = e.target;
   if (c.dataset.pair) {
     const spare = (lastPairs || {}).kind === 'spare';
-    const q = c.checked ? (spare ? `Switch Zero Wait on for ${c.dataset.pair}? A second server of the mode starts on the mode's port + ${lastPairs.portOffset} and takes the next players whenever the first one is busy (needs memory for one more server, and that port open to players).`
+    const q = c.checked ? (spare ? `Switch Zero Wait on for ${c.dataset.pair}? A second server of the mode starts on UDP ${(lastPairs.sparePorts || {})[c.dataset.pair] || 'the mode\'s spare port'} and takes the next players whenever the first one is busy (needs memory for one more server, and that port open to players).`
         : `Switch Zero Wait on for ${c.dataset.pair}? Its server finishes its current match, then a second server keeps the next match ready (needs memory for one more server).`)
       : (spare ? `Switch Zero Wait off for ${c.dataset.pair}? Its second server closes after its current match.`
         : `Switch Zero Wait off for ${c.dataset.pair}? It runs as a single server again at once (players on it are disconnected).`);
