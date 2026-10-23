@@ -166,6 +166,7 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_PORT_BASE` | first game port: the modes get it and the next four, in the order `solo,playground,duos,trios,squads` (Linux; see [Ports](#ports)) |
 | `RV_PORTS` | one port per mode, e.g. `solo=8000,duos=8001`; wins over `RV_PORT_BASE` for the mode it names (Linux) |
 | `RV_PUBLIC_IP` | address players connect to (detected if empty) |
+| `RV_PUBLIC_IPS` | additional addresses players can connect to, comma separated (IPv4 or IPv6, up to 7 more) |
 | `RV_REGION` | e.g. `ap-northeast-1` (measured by ping if empty) |
 | `RV_KSM` | `on` = memory sharing between modes (see [Memory sharing](#memory-sharing-between-modes-ksm)) |
 | `RV_WEBUI` | `off` = no web admin page (use the terminal menu) |

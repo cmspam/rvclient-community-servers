@@ -121,6 +121,8 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
         <div><label for="sIp">Public IP players connect to</label><input id="sIp" placeholder="detecting..."></div>
         <div id="sRegionBox"><label for="sRegion">Region</label><select id="sRegion"></select></div>
       </div>
+      <label for="sIps">Additional public IPs (comma separated, optional)</label>
+      <input id="sIps" placeholder="e.g. 203.0.113.7, 2001:db8::7">
       <label>Modes to run (each needs about 4 GB of RAM)</label>
       <p class="muted" id="sFit"></p>
       <div class="modes-pick" id="sModes"></div>
@@ -330,7 +332,7 @@ $('fSetup').onsubmit = async e => {
   if (!modes.length) return msg('mSetup', 'Pick at least one mode.');
   try {
     await post('/api/setup', { edition, setupCode: $('sCode').value, contact: $('sContact').value, name: $('sName').value,
-      modes, publicIp: $('sIp').value, region: edition === 'private' ? '' : $('sRegion').value,
+      modes, publicIp: $('sIp').value, publicIps: $('sIps').value, region: edition === 'private' ? '' : $('sRegion').value,
       nodeId: $('sNodeId').value, nodeKey: $('sNodeKey').value });
     $('sLog').textContent = 'Setup started...';
   } catch (err) { msg('mSetup', err.message); }

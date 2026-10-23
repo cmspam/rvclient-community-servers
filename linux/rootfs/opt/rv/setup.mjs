@@ -241,7 +241,9 @@ async function installKit(backend, nodeId, nodeKey, log) {
 
 async function writeConfigs(opts, nodeId, nodeKey, log) {
     const args = ['setup-box.mjs', '--backend', opts.backend, '--node-id', nodeId, '--node-key', nodeKey,
-        '--region', opts.region, '--public-ip', opts.publicIp, '--modes', opts.modes.join(','), '--host-id', hostId()];
+        '--region', opts.region, '--public-ip', opts.publicIp,
+        ...(opts.publicIps?.length > 1 ? ['--public-ips', opts.publicIps.join(',')] : []),
+        '--modes', opts.modes.join(','), '--host-id', hostId()];
     if (opts.edition === 'private') args.push('--private');
     const out = await run(process.execPath, args, { cwd: SUP_DIR });
     for (const line of out.split(/\r?\n/)) if (line.trim()) log(line.trim());
@@ -262,7 +264,7 @@ export async function ensureWinePrefix(log = () => {}) {
     catch { symlinkSync(join(LOGS, 'game'), logs); }
 }
 
-// opts: { edition, setupCode, contact, name, modes[], publicIp, region, nodeId, nodeKey, backend, zip }
+// opts: { edition, setupCode, contact, name, modes[], publicIp, publicIps[], region, nodeId, nodeKey, backend, zip }
 export async function runSetup(input, log) {
     ensureDirs();
     const say = msg => { const line = `${new Date().toISOString()} ${msg}`; log(msg); try { appendFileSync(SETUP_LOG, line + '\n'); } catch { /* ignore */ } };
@@ -277,7 +279,14 @@ export async function runSetup(input, log) {
     say('== Your server');
     if (!opts.publicIp) opts.publicIp = await detectPublicIp();
     if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(opts.publicIp || '')) throw new Error('Could not detect the public IPv4 address - set it (RV_PUBLIC_IP).');
-    say(`Public IP players connect to: ${opts.publicIp}`);
+    const extraIps = Array.isArray(opts.publicIps) ? opts.publicIps
+        : String(opts.publicIps || '').split(',').map(s => s.trim()).filter(Boolean);
+    opts.publicIps = [...new Set([opts.publicIp, ...extraIps])];
+    for (const address of opts.publicIps) {
+        if (!net.isIP(address)) throw new Error(`"${address}" is not an IP address (RV_PUBLIC_IPS)`);
+    }
+    if (opts.publicIps.length > 8) throw new Error('At most 8 public addresses, the primary included (RV_PUBLIC_IPS).');
+    say(`Public IP players connect to: ${opts.publicIps.join(', ')}`);
     if (!opts.region) {
         if (opts.edition === 'private') opts.region = 'us-east-1';   // never matchmade: region unused
         else {
@@ -314,7 +323,8 @@ export async function runSetup(input, log) {
     }).join(', ')}`);
     await ensureWinePrefix(say);
 
-    updateState({ edition: opts.edition, name: opts.name, region: opts.region, publicIp: opts.publicIp, setupDoneAt: new Date().toISOString() });
+    updateState({ edition: opts.edition, name: opts.name, region: opts.region, publicIp: opts.publicIp,
+        publicIps: opts.publicIps, setupDoneAt: new Date().toISOString() });
     say(opts.edition === 'private'
         ? '== Done. Your private server starts now: launcher > Server Status > My private servers > Join.'
         : `== Done. Your server ${nodeId} is registered and WAITING FOR APPROVAL. It joins matchmaking by itself once approved.`);
@@ -329,7 +339,8 @@ export function optionsFromEnv(env = process.env) {
     const modesRaw = (env.RV_MODES || '').toLowerCase().trim();
     const modes = modesRaw === 'all' ? MODES.map(m => m.key) : modesRaw.split(',').map(s => s.trim()).filter(Boolean);
     const o = { edition, setupCode: env.RV_SETUP_CODE || '', contact: env.RV_CONTACT || '', name: env.RV_NAME || '', modes,
-        publicIp: env.RV_PUBLIC_IP || '', region: env.RV_REGION || '', nodeId: env.RV_NODE_ID || '', nodeKey: env.RV_NODE_KEY || '',
+        publicIp: env.RV_PUBLIC_IP || '', publicIps: env.RV_PUBLIC_IPS || '',
+        region: env.RV_REGION || '', nodeId: env.RV_NODE_ID || '', nodeKey: env.RV_NODE_KEY || '',
         backend: env.RV_BACKEND || '', zip: env.RV_GAME_ZIP || '/game.zip' };
     const haveCredential = (o.nodeId && o.nodeKey) || readState().nodeId || (edition === 'private' ? o.setupCode : o.contact);
     return haveCredential ? o : null;

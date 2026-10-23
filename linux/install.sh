@@ -11,8 +11,10 @@
 #
 # Every question can be answered in advance through an environment variable (RV_GAME_ZIP,
 # RV_DATA_DIR, RV_EDITION=community|private, RV_SETUP_CODE, RV_CONTACT, RV_NAME, RV_PUBLIC_IP,
-# RV_MODES=solo,duos,..., RV_SWAP=solo,... (Zero Wait modes), RV_ZEROWAIT=pairs|spare (Zero Wait
-# method), RV_KSM=on|off, RV_WEBUI=on|off).
+# RV_PUBLIC_IPS, RV_MODES=solo,duos,..., RV_SWAP=solo,... (Zero Wait modes), RV_ZEROWAIT=pairs|spare
+# (Zero Wait method), RV_KSM=on|off, RV_WEBUI=on|off).
+# RV_PUBLIC_IPS lists additional addresses the box answers on (comma separated, IPv4 or IPv6,
+# primary excluded, up to 7 more), so one game server can be reached on every address.
 # The game ports are 7777-7781 unless RV_PORT_BASE=<first port> (the modes get it and the next
 # four) or RV_PORTS=<mode>=<port>,... says otherwise; the warm spares follow the mode's spare
 # offset (100 by default).
@@ -285,6 +287,8 @@ else
     [[ "$REPLY" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "That is not an IPv4 address."
     ENV_ARGS+=(RV_PUBLIC_IP="$REPLY")
     PUBLIC_IP="$REPLY"
+    ask "Additional public IPs, comma separated, optional" "" "${RV_PUBLIC_IPS:-}"
+    [ -n "$REPLY" ] && ENV_ARGS+=(RV_PUBLIC_IPS="$REPLY")
     echo
 
     # ------------------------------------------------------------ modes

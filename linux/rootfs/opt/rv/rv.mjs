@@ -300,6 +300,7 @@ async function interactiveSetup() {
     else o.contact = await ask('Your Discord name (so the admins can reach you about approval)', env.contact);
     o.name = await ask('Server name', env.name || readState().name || (edition === 'private' ? 'Linux private server' : ''));
     o.publicIp = await ask('Public IP players connect to', env.publicIp || await detectPublicIp());
+    o.publicIps = await ask('Additional public IPs (comma separated, optional)', env.publicIps || '');
     if (edition !== 'private') o.region = await ask(`Region (${Object.keys(REGIONS).join(', ')}; empty = measure)`, env.region || '');
     const modes = await ask(`Modes (${MODES.map(m => m.key).join(', ')} or all)`, env.modes?.join(',') || (edition === 'private' ? 'playground' : 'solo,playground'));
     o.modes = modes === 'all' ? MODES.map(m => m.key) : modes.split(',').map(s => s.trim()).filter(Boolean);

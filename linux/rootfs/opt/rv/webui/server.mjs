@@ -143,7 +143,8 @@ export function startWebUi({ manager, actions, setupJob, startSetup, port = 8080
                 const b = await readBody(req);
                 const modes = Array.isArray(b.modes) ? b.modes.filter(m => MODES.some(x => x.key === m)) : [];
                 startSetup({ edition: b.edition, setupCode: String(b.setupCode || '').trim(), contact: String(b.contact || '').trim(),
-                    name: String(b.name || '').trim().slice(0, 60), modes, publicIp: String(b.publicIp || '').trim(), region: String(b.region || '').trim(),
+                    name: String(b.name || '').trim().slice(0, 60), modes, publicIp: String(b.publicIp || '').trim(),
+                    publicIps: String(b.publicIps || '').trim(), region: String(b.region || '').trim(),
                     nodeId: String(b.nodeId || '').trim(), nodeKey: String(b.nodeKey || '').trim() });
                 return send(200, { success: true });
             }
