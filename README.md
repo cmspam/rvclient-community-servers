@@ -298,6 +298,32 @@ kit does not list are offered too (end-of-match screen time, storm size, frame c
 starting stats, held item fix, and the better bots' own switches below), and any other key already in a
 `Config.<mode>.ini` section is shown with its raw name.
 
+### Late joining and the new game modes
+
+With Server.dll 2026.10.25.0, a match takes late joiners until it reaches storm ring 3 instead of
+stopping at 10 real players. `JoinTakeoverMaxRing=3` sets that ring; 0 keeps joins open for the
+whole match. A match can fill every living bot body, up to its player target. To force a
+player-count limit, add `JoinTakeoverMaxPlayers=<n>` to the mode's `Config.<mode>.ini`; 0, the
+default, means no count limit. `JoinTakeover=0` turns late joining off. The ring limit still
+applies.
+
+Deathmatch and Possession run on an ordinary Solos server:
+
+- `Deathmatch=1` in the Solos config: a death respawns the player in the safe ring.
+  `DeathmatchSeconds` is the match length, 30 to 7200 seconds.
+- `Possession=1` in the Solos config: a death puts the player into a living bot's body, with the
+  bot's items, health and moves; the player keeps their own outfit and name. The two flags are
+  mutually exclusive.
+- The instance must advertise the mode to the backend. Add `"matchConfig": "deathmatch-solo"` or
+  `"matchConfig": "possession-solo"` to its entry in `ds-instances.json`, under
+  `server/Rumbleverse/Binaries/Win64/RVSupervisor/`.
+- The backend needs `RVCOZMO_DIRECT_MODES=1`.
+- Players join the server from the community server browser. The stock game mode screen has no
+  Deathmatch or Possession tile, so they are not selectable there yet.
+
+The container's `rv status` and `rv mode` list the five standard modes. A custom instance added to
+`ds-instances.json` is started by the kit supervisor but is not shown in that table.
+
 Default settings: the container turns on **the better bots** (`SweatyBots`) and the **held item fix**
 (`HeldItemFix`) in every mode's `Config.<mode>.ini` when it starts, but only where the setting is not in the
 file yet. A value you set yourself, also `false`, is kept: `rv set solo SweatyBots false`. On kit
