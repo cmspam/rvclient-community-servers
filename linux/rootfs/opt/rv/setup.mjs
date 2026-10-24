@@ -17,8 +17,8 @@ import net from 'node:net';
 import os from 'node:os';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
-import { DATA, SERVER, WIN64, SUP_DIR, LOGS, SETUP_LOG, GAME_EXE, DEFAULT_BACKEND, MODES, INSTANCES, SPARE_MODE_KEYS,
-    readState, readJson, updateState, gameInstalled, kitVersion, ensureDirs, applyPortOverrideFromEnv, modePort, sparePort } from './lib.mjs';
+import { DATA, SERVER, WIN64, SUP_DIR, LOGS, SETUP_LOG, GAME_EXE, DEFAULT_BACKEND, MODES, INSTANCES,
+    readState, readJson, updateState, gameInstalled, kitVersion, ensureDirs, applyPortOverrideFromEnv, serverPorts } from './lib.mjs';
 
 export const REGIONS = {
     'us-east-1': 'USA East', 'us-west-1': 'USA West', 'eu-central-1': 'Europe', 'sa-east-1': 'South America',
@@ -313,14 +313,12 @@ export async function runSetup(input, log) {
     say('== Game ports');
     const ports = applyPortOverrideFromEnv(msg => say(`  ${msg}`));
     if (ports) say(ports.changes.length
-        ? '  Port override from RV_PORT_BASE/RV_PORTS applied.'
-        : '  Port override from RV_PORT_BASE/RV_PORTS is already in place.');
-    const inst = readJson(INSTANCES, null);
-    say(`  ${MODES.map(m => `${m.label} ${modePort(m, inst)}/udp`).join(', ')}`);
-    say(`  Warm spare ports (when Zero Wait uses them): ${SPARE_MODE_KEYS.map(k => {
-        const m = MODES.find(x => x.key === k);
-        return `${m.label} ${sparePort(m, inst)}/udp`;
-    }).join(', ')}`);
+        ? '  Servers and ports from RV_COUNTS/RV_PORT_BASE/RV_PORTS/RV_SPARE_OFFSET/RV_SPARE_PORTS applied.'
+        : '  Servers and ports from the environment are already in place.');
+    const servers = serverPorts(readJson(INSTANCES, null));
+    say(`  ${servers.map(x => `${x.id} ${x.port}/udp`).join(', ')}`);
+    say(`  Warm spare ports (when Zero Wait uses them): ${servers.filter(x => x.sparePort !== undefined)
+        .map(x => `${x.id} ${x.sparePort}/udp`).join(', ')}`);
     await ensureWinePrefix(say);
 
     updateState({ edition: opts.edition, name: opts.name, region: opts.region, publicIp: opts.publicIp,

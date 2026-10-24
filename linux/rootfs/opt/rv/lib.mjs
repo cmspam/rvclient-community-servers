@@ -1,6 +1,7 @@
 // Shared paths and helpers for the entrypoint, setup and web UI.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { resolveBoxPorts } from './box-ports.mjs';
 
 export const DATA = process.env.RV_DATA || '/data';
 export const SERVER = join(DATA, 'server');                               // game files + server kit
@@ -122,103 +123,116 @@ export function sparePorts(instances = readJson(INSTANCES, null)) {
     return Object.fromEntries(SPARE_MODE_KEYS.map(k => [k, sparePort(k, instances)]));
 }
 
-// ---- install-time port override ----
-// RV_PORT_BASE=<first port>: the modes get it and the next ports, in MODES order.
-// RV_PORTS=<mode>=<port>,...: a port per named mode; a named mode wins over RV_PORT_BASE.
-// Both are checked before anything is written. With neither set the file is left untouched.
-function portNumber(raw, what) {
-    const s = String(raw ?? '').trim();
-    if (!/^\d+$/.test(s)) throw new Error(`${what}: "${s}" is not a port number (${PORT_MIN}-${PORT_MAX}).`);
-    const n = Number(s);
-    if (!Number.isInteger(n) || n < PORT_MIN || n > PORT_MAX) throw new Error(`${what}: ${s} is outside ${PORT_MIN}-${PORT_MAX}.`);
-    return n;
-}
+// ---- servers and ports from the environment ----
+// The same choices as the server kit's own setup (box-ports.mjs, an identical copy of the kit's
+// RVSupervisor/box-ports.mjs), checked before anything is written:
+//   RV_COUNTS=solo=4,duos=2          servers per mode (solo-01, solo-02, ...), each on its own port
+//                                    and with its own warm spare; a lower count removes the extra ones
+//   RV_PORT_BASE=<first port>        every server gets the next port, in MODES order
+//   RV_PORTS=<mode or server>=<port> a port per mode (its first server) or per server id
+//   RV_SPARE_OFFSET=<n>              a warm spare is its server's port + this
+//   RV_SPARE_PORTS=<mode or server>=<port>  a warm spare port per mode or server id
+// A server that is not named keeps the port it has. With none of them set the file is left untouched.
+// The servers of one mode share its Config.<mode>.ini; each gets its own port on the command line.
+const GAME_MODE = { solo: 1, playground: 0, duos: 2, trios: 3, squads: 4 };
+const serverRe = key => new RegExp(`^${key}-(\\d+)$`);
+// The server an entry belongs to: its own id, or for a spare the server it is the spare of.
+const ownerId = i => String(i.spareOf || i.id || '').replace(/-spare$/, '');
+const managedBy = i => MODES.find(m => serverRe(m.key).test(ownerId(i))) || null;
 export function parsePortOverride(env = process.env) {
-    const baseRaw = String(env.RV_PORT_BASE ?? '').trim();
-    const portsRaw = String(env.RV_PORTS ?? '').trim();
-    if (!baseRaw && !portsRaw) return null;
-    const ports = Object.create(null), seen = new Map(), given = new Set();
-    if (portsRaw) {
-        for (const part of portsRaw.split(',')) {
-            const item = part.trim();
-            if (!item) continue;
-            const eq = item.indexOf('=');
-            if (eq <= 0) throw new Error(`RV_PORTS: "${item}" is not <mode>=<port> (for example solo=7777).`);
-            const name = item.slice(0, eq).trim().toLowerCase();
-            const m = modeByKey(name);
-            if (!m) throw new Error(`RV_PORTS: unknown mode "${name}" (use solo, playground, duos, trios, squads).`);
-            if (given.has(m.key)) throw new Error(`RV_PORTS: ${m.key} is given more than once.`);
-            const p = portNumber(item.slice(eq + 1), `RV_PORTS ${m.key}`);
-            if (seen.has(p)) throw new Error(`RV_PORTS: port ${p} is used for both ${seen.get(p)} and ${m.key}.`);
-            given.add(m.key);
-            seen.set(p, m.key);
-            ports[m.key] = p;
-        }
-        if (!given.size) throw new Error('RV_PORTS lists no <mode>=<port> entries.');
-    }
-    let base = null;
-    if (baseRaw) {
-        base = portNumber(baseRaw, 'RV_PORT_BASE');
-        if (base + MODES.length - 1 > PORT_MAX) throw new Error(`RV_PORT_BASE: ${base} leaves no room for ${MODES.length} modes below ${PORT_MAX}.`);
-    }
-    return { base, ports };
+    const value = name => { const v = String(env[name] ?? '').trim(); return v ? v : undefined; };
+    const choice = { counts: value('RV_COUNTS'), portBase: value('RV_PORT_BASE'), ports: value('RV_PORTS'),
+        spareOffset: value('RV_SPARE_OFFSET'), sparePorts: value('RV_SPARE_PORTS') };
+    return Object.values(choice).some(v => v !== undefined) ? choice : null;
 }
-// The final ports of every mode from an override and the file, with the warm spares derived the
-// same way. Throws when a main or spare port repeats another, or is used by another instance the
-// file defines.
-export function resolvePorts(override, instances = readJson(INSTANCES, null)) {
-    if (!override) return null;
-    const ports = {}, spares = {}, offsets = {};
-    MODES.forEach((m, i) => {
-        ports[m.key] = override.ports[m.key] ?? (override.base != null ? override.base + i : modePort(m, instances));
-    });
-    const use = new Map();
-    const claim = (port, what) => {
-        if (!validPort(port)) throw new Error(`${what} would use UDP ${port}, outside ${PORT_MIN}-${PORT_MAX}.`);
-        if (use.has(port)) throw new Error(`${what} would use UDP ${port}, already used by ${use.get(port)}.`);
-        use.set(port, what);
-    };
-    for (const m of MODES) claim(ports[m.key], `${m.key} (main)`);
-    const rewritten = new Set();
+// What the file already has, in the shape resolveBoxPorts reads.
+// Parked servers (_moreModesLater, started when their mode is switched on) count like the others.
+const parkedList = instances => Array.isArray(instances?._moreModesLater)
+    ? instances._moreModesLater.filter(i => i && typeof i === 'object') : [];
+export function currentLayout(instances) {
+    const list = [...instanceList(instances), ...parkedList(instances)];
+    const current = { counts: {}, ports: {}, spares: {}, offset: instances?.warmSparePortOffset, reserved: {} };
     for (const m of MODES) {
-        const main = modeInstance(m, instances), explicit = spareInstance(m, instances);
-        if (main?.id) rewritten.add(main.id);
-        if (explicit?.id) rewritten.add(explicit.id);
-        if (!SPARE_MODES.has(m.key) && !explicit) continue;
-        offsets[m.key] = spareOffset(m, instances);
-        spares[m.key] = ports[m.key] + offsets[m.key];
-        claim(spares[m.key], `${m.key} (warm spare)`);
+        const own = list.filter(i => !i.spareOf && serverRe(m.key).test(i.id));
+        if (own.length) current.counts[m.key] = Math.max(...own.map(i => Number(serverRe(m.key).exec(i.id)[1])));
+        for (const i of own) {
+            if (validPort(i.port)) current.ports[i.id] = i.port;
+            const spare = list.find(x => x.spareOf === i.id) || list.find(x => x.id === `${i.id}-spare`);
+            if (validPort(i.sparePort)) current.spares[i.id] = i.sparePort;
+            else if (validPort(spare?.port)) current.spares[i.id] = spare.port;
+        }
     }
-    // Other instances keep their own ports; the supervisor refuses a duplicate too, so check them.
-    const extra = [...instanceList(instances), ...(Array.isArray(instances?._moreModesLater) ? instances._moreModesLater : [])];
-    for (const i of extra) {
-        if (!i || rewritten.has(i.id) || !validPort(i.port)) continue;
-        claim(i.port, `${i.id || 'another instance'} in ds-instances.json`);
-    }
-    return { ports, spares, offsets };
+    for (const i of list) if (!managedBy(i) && !isSpareId(i.id) && validPort(i.port)) current.reserved[i.port] = i.id;
+    return current;
 }
-// The same instances with the resolved ports written into the mode entries and the spare entries
-// the file already has. Nothing is added: a spare the file does not name is the supervisor's own.
-export function rewritePorts(instances, resolved) {
+// The servers and ports an override gives: { servers: [{ key, id, port, sparePort }], offset, ports,
+// spares }. ports and spares are each mode's first server, as the rest of the container reads them.
+export function resolvePorts(choice, instances = readJson(INSTANCES, null)) {
+    if (!choice) return null;
+    const layout = resolveBoxPorts(MODES, choice, currentLayout(instances));
+    const first = key => layout.servers.find(x => x.key === key);
+    return { ...layout,
+        ports: Object.fromEntries(MODES.map(m => [m.key, first(m.key).port])),
+        spares: Object.fromEntries(SPARE_MODE_KEYS.map(k => [k, first(k).sparePort])) };
+}
+// The file with the layout written in: every server of it present on its port, servers above a mode's
+// count removed with their spares, and each spare where the layout puts it (a sparePort on its server,
+// or the spare entry the file defines). Other instances are left as they are.
+export function rewritePorts(instances, resolved, choice = {}) {
     const next = JSON.parse(JSON.stringify(instances));
     const changes = [];
-    const set = (entry, port, kind) => {
-        if (!entry || entry.port === port) return;
-        changes.push({ id: entry.id, kind, from: entry.port, to: port });
-        entry.port = port;
+    const wanted = new Set(resolved.servers.map(x => x.id));
+    const keep = i => {
+        if (!managedBy(i) || wanted.has(ownerId(i))) return true;
+        changes.push({ id: i.id, kind: 'removed', from: i.port, to: null });
+        return false;
     };
-    for (const m of MODES) {
-        set(modeInstance(m, next), resolved.ports[m.key], 'main');
-        if (resolved.spares[m.key] !== undefined) set(spareInstance(m, next), resolved.spares[m.key], 'spare');
+    const kept = instanceList(next).filter(keep);
+    const parked = parkedList(next).filter(keep);
+    const all = () => [...kept, ...parked];
+    for (const x of resolved.servers) {
+        let entry = all().find(i => i.id === x.id);
+        if (!entry) {
+            // A mode the file does not run is not added: the file is the box's choice of modes. An
+            // extra server is a copy of its mode's first one, and waits with it when that is parked.
+            const firstOfMode = all().find(i => !i.spareOf && serverRe(x.key).test(i.id));
+            if (!firstOfMode) continue;
+            const { sparePort: _ownSpare, ...base } = firstOfMode;
+            entry = { ...base, id: x.id, port: x.port, gameMode: base.gameMode ?? GAME_MODE[x.key],
+                config: base.config || `Config.${x.key}.ini` };
+            (parked.includes(firstOfMode) ? parked : kept).push(entry);
+            changes.push({ id: x.id, kind: 'added', from: null, to: x.port });
+        } else if (entry.port !== x.port) {
+            changes.push({ id: x.id, kind: 'main', from: entry.port, to: x.port });
+            entry.port = x.port;
+        }
+        if (x.sparePort === undefined) continue;
+        const defined = all().find(i => i.spareOf === x.id) || all().find(i => i.id === `${x.id}-spare`);
+        if (defined) {
+            if (defined.port !== x.sparePort) changes.push({ id: defined.id, kind: 'spare', from: defined.port, to: x.sparePort });
+            defined.port = x.sparePort;
+            delete entry.sparePort;
+        } else if (x.sparePort === x.port + resolved.offset) {
+            delete entry.sparePort;
+        } else if (entry.sparePort !== x.sparePort) {
+            changes.push({ id: x.id, kind: 'spare', from: entry.sparePort ?? x.port + resolved.offset, to: x.sparePort });
+            entry.sparePort = x.sparePort;
+        }
+    }
+    next.instances = kept;
+    if (Array.isArray(next._moreModesLater)) next._moreModesLater = parked;
+    if (choice.spareOffset !== undefined) {
+        if (resolved.offset === SPARE_PORT_OFFSET) delete next.warmSparePortOffset;
+        else next.warmSparePortOffset = resolved.offset;
     }
     return { next, changes };
 }
 export function applyPortOverride(instances, env = process.env) {
-    const override = parsePortOverride(env);
-    if (!override) return null;
-    const resolved = resolvePorts(override, instances);
-    const { next, changes } = rewritePorts(instances, resolved);
-    return { next, changes, ports: resolved.ports, spares: resolved.spares };
+    const choice = parsePortOverride(env);
+    if (!choice) return null;
+    const resolved = resolvePorts(choice, instances);
+    const { next, changes } = rewritePorts(instances, resolved, choice);
+    return { next, changes, servers: resolved.servers, ports: resolved.ports, spares: resolved.spares };
 }
 // Called after the kit writes ds-instances.json and before the supervisor starts. Returns null when
 // no override is set or the server is not set up yet.
@@ -231,9 +245,50 @@ export function applyPortOverrideFromEnv(log = () => {}) {
     if (!r) return null;
     if (r.changes.length) {
         writeJson(INSTANCES, r.next, 0o644);
-        for (const c of r.changes) log(`${c.id || 'instance'}: ${c.kind} port ${c.from ?? '?'} -> ${c.to}`);
+        for (const c of r.changes)
+            log(c.kind === 'added' ? `${c.id}: added on port ${c.to}`
+                : c.kind === 'removed' ? `${c.id}: removed (above the server count)`
+                : `${c.id}: ${c.kind} port ${c.from ?? '?'} -> ${c.to}`);
     }
     return r;
+}
+// Every server of the file, as { id, key, port, sparePort } (sparePort for the battle royale modes):
+// the ports the container uses, for the web page, the installer and the logs.
+export function serverPorts(instances = readJson(INSTANCES, null)) {
+    const list = instanceList(instances);
+    const offsetOf = Number.isInteger(instances?.warmSparePortOffset) && instances.warmSparePortOffset > 0
+        ? instances.warmSparePortOffset : SPARE_PORT_OFFSET;
+    const out = [];
+    for (const m of MODES) {
+        const own = list.filter(i => !i.spareOf && serverRe(m.key).test(i.id) && validPort(i.port));
+        if (!own.length) own.push({ id: m.id, port: modePort(m, instances) });
+        for (const i of own) {
+            const defined = list.find(x => x.spareOf === i.id) || list.find(x => x.id === `${i.id}-spare`);
+            const sparePort = !SPARE_MODES.has(m.key) ? undefined
+                : validPort(defined?.port) ? defined.port : validPort(i.sparePort) ? i.sparePort : i.port + offsetOf;
+            out.push({ id: i.id, key: m.key, port: i.port, ...(sparePort !== undefined ? { sparePort } : {}) });
+        }
+    }
+    return out;
+}
+// The ids of a mode's servers (solo-01, solo-02, ...); the mode's default id when the file has none.
+export function serverIds(key, instances = readJson(INSTANCES, null)) {
+    const m = modeByKey(key);
+    if (!m) return [];
+    const ids = instanceList(instances).filter(i => !i.spareOf && serverRe(m.key).test(i.id)).map(i => i.id);
+    return ids.length ? ids : [m.id];
+}
+// How many servers each mode runs (1 when the file has none of its own).
+export function serverCount(key, instances = readJson(INSTANCES, null)) {
+    return serverIds(key, instances).length;
+}
+// A server id (solo-02) or a mode key (solo) -> { mode, ids }: the one server, or every server of the mode.
+export function serverTarget(target, instances = readJson(INSTANCES, null)) {
+    const t = String(target ?? '').toLowerCase();
+    const mode = MODES.find(m => m.key === t || m.id === t || serverRe(m.key).test(t));
+    if (!mode) return null;
+    if (t === mode.key) return { mode, ids: serverIds(mode.key, instances) };
+    return { mode, ids: [t] };
 }
 
 export const gameInstalled = () => existsSync(join(WIN64, GAME_EXE));
