@@ -12,14 +12,14 @@ export const HELP = `Rumbleverse server - terminal admin
   rv status                            modes, players, memory, supervisor
   rv node                              your server as the backend sees it (review status, versions)
   rv mode <mode> on|off                switch a mode on or off
-  rv start|stop|restart <mode>         control one mode's server
+  rv start|stop|restart <mode|server> control a mode's servers, or one server (e.g. solo-02)
   rv restart-all                       restart every running mode
   rv settings <mode>                   show a mode's settings
   rv set <mode> <setting> <value> [--restart]
                                        change a setting (e.g. rv set solo SpawnBot 40)
   rv update | rv rollback              install the latest server kit / go back one version
   rv supervisor start|stop|restart     all game servers at once (stop keeps them down)
-  rv logs <supervisor|setup|mode|mode-spare> [lines]
+  rv logs <supervisor|setup|mode|server|...-spare> [lines]
   rv leave                             remove this server from the rVclient server list (before deleting it)
   rv setup                             first-time setup on the terminal
   rv reset-password                    new random web UI password
@@ -28,7 +28,10 @@ export const HELP = `Rumbleverse server - terminal admin
                                        warm spare (two ports, the backend chooses)
   rv swap on|off <mode>                Zero Wait on or off for a mode (no waiting between matches)
 
-  Modes: ${MODES.map(m => m.key).join(', ')}`;
+  rv ports                             the servers and UDP ports this box uses
+
+  Modes: ${MODES.map(m => m.key).join(', ')}. A mode can run several servers (RV_COUNTS=solo=4):
+  solo-01, solo-02, ... each on its own port.`;
 
 const gb = mb => mb == null ? '-' : `${(mb / 1024).toFixed(2)} GB`;
 const up = s => !s ? '-' : s < 3600 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, '0')}s` : `${Math.floor(s / 3600)}h${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}m`;

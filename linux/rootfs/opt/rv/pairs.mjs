@@ -43,7 +43,7 @@ import fs from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import os from 'node:os';
-import { DATA, SERVER, WIN64, SUP_DIR, INSTANCES, MODES, GAME_EXE, readJson, writeJson, readState, updateState, isPairInstance, modePort } from './lib.mjs';
+import { DATA, SERVER, WIN64, SUP_DIR, INSTANCES, MODES, GAME_EXE, readJson, writeJson, readState, updateState, isPairInstance, modePort, serverCount } from './lib.mjs';
 import { applyAddons } from './addons.mjs';
 import { applyMapOnceConfig } from './maponce.mjs';
 
@@ -106,15 +106,20 @@ export const USER_MODES = join(SUP_DIR, 'modes.json');      // the owner's choic
 const MAIN_MODES = join(SUP_DIR, 'modes.main.json');        // what the main supervisor runs (without the pairs)
 
 // Modes chosen to run as pairs (when they are switched on). RV_SWAP gives the first value.
+// A pair stands in for a mode's one server on its one port, so a mode that runs several servers
+// (RV_COUNTS) is not paired: its servers stay with the main supervisor, where the kit's warm spare
+// gives each of them its own second server.
 export function swapModes() {
     const st = readState();
     const list = Array.isArray(st.swapModes) ? st.swapModes : listedModes();
-    return list.filter(k => BR.has(k));   // Playground has no matches to wait between
+    return list.filter(k => BR.has(k) && serverCount(k) <= 1);   // Playground has no matches to wait between
 }
 export function setSwapMode(key, on) {
     const m = MODES.find(x => x.key === key);
     if (!m) throw new Error(`Unknown mode "${key}" (solo, playground, duos, trios, squads).`);
     if (!BR.has(m.key)) throw new Error(`${m.label} has no matches to wait between: Zero Wait is for Solos, Duos, Trios and Squads.`);
+    if (on && serverCount(m.key) > 1)
+        throw new Error(`${m.label} runs ${serverCount(m.key)} servers: server pairs are for a mode with one server. Use the warm spare method (rv swap method spare), which gives each server its own spare.`);
     const cur = new Set(swapModes());
     if (on) cur.add(m.key); else cur.delete(m.key);
     updateState({ swapModes: MODES.map(x => x.key).filter(k => cur.has(k)) });

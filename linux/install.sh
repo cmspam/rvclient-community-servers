@@ -15,9 +15,11 @@
 # (Zero Wait method), RV_KSM=on|off, RV_WEBUI=on|off).
 # RV_PUBLIC_IPS lists additional addresses the box answers on (comma separated, IPv4 or IPv6,
 # primary excluded, up to 7 more), so one game server can be reached on every address.
-# The game ports are 7777-7781 unless RV_PORT_BASE=<first port> (the modes get it and the next
-# four) or RV_PORTS=<mode>=<port>,... says otherwise; the warm spares follow the mode's spare
-# offset (100 by default).
+# A mode can run several servers (RV_COUNTS=solo=4: solo-01 to solo-04, each on its own port).
+# The game ports are 7777-7781, extra servers on the next free ports, unless RV_PORT_BASE=<first
+# port> (every server gets the next port), RV_PORTS=<mode or server>=<port>,..., RV_SPARE_OFFSET=<n>
+# or RV_SPARE_PORTS=<mode or server>=<port>,... say otherwise; a warm spare is its server's port +
+# 100 by default.
 # With RV_UNATTENDED=1 it never asks: unanswered questions take the suggested answer.
 set -euo pipefail
 
@@ -72,6 +74,16 @@ fi
 if [ "$ENGINE" = docker ] && ! docker info >/dev/null 2>&1; then
     die "Docker is installed but not usable by this user. Run the installer with sudo."
 fi
+IMAGE_PULLED=0
+pull_image() {
+    [ "$IMAGE_PULLED" = 1 ] && return
+    info "Downloading the server image (about 800 MB)..."
+    if ! $ENGINE pull -q "$IMAGE" >/dev/null 2>&1; then
+        $ENGINE image inspect "$IMAGE" >/dev/null 2>&1 || die "Could not download $IMAGE. Check the internet connection and try again."
+        warn "Could not download a newer image; using the one already on this machine."
+    fi
+    IMAGE_PULLED=1
+}
 
 MEM_MB=$(awk '/^MemTotal:/ {print int($2/1024)}' /proc/meminfo)
 KVER="$(uname -r)"; KMAJ=${KVER%%.*}; KMIN=${KVER#*.}; KMIN=${KMIN%%.*}
@@ -144,107 +156,6 @@ ALREADY=0
 [ -f "$DATA/state/rv.json" ] && grep -q '"nodeId": "node-' "$DATA/state/rv.json" 2>/dev/null && ALREADY=1
 
 ENV_ARGS=()
-
-# ---------------------------------------------------------------- game ports
-# The kit's ds-instances.json is what the supervisor starts the modes on. An existing server's ports
-# are read here so that a rerun opens the same ones. RV_PORT_BASE=<first port> gives solo,
-# playground, duos, trios, squads that port and the next four, in that order; RV_PORTS=<mode>=<port>,...
-# names a port per mode and wins over RV_PORT_BASE for that mode. The warm spares keep the mode's
-# spare offset (100 by default, or what the existing file says).
-declare -A PORT_OF=([solo]=7777 [playground]=7778 [duos]=7779 [trios]=7780 [squads]=7781)
-declare -A SPARE_OF=([solo]=100 [duos]=100 [trios]=100 [squads]=100)
-INSTANCES_FILE="$DATA/server/Rumbleverse/Binaries/Win64/RVSupervisor/ds-instances.json"
-if [ -f "$INSTANCES_FILE" ]; then
-    # One object per instance: id first, then port, then spareOf on a spare. The kit writes the file
-    # with indentation; a compact file falls back to the ports above.
-    declare -A FILE_PORT=() FILE_SPAREOF=()
-    while read -r _id _port _spareof; do
-        [[ "$_port" =~ ^0*[0-9]{1,5}$ ]] || continue
-        _pn=$((10#${_port})); { [ "$_pn" -ge 1 ] && [ "$_pn" -le 65535 ]; } || continue
-        FILE_PORT[$_id]=$_pn
-        [ "$_spareof" != "-" ] && FILE_SPAREOF[$_id]=$_spareof
-    done < <(awk '
-        /^[[:space:]]*}/ {
-            if (id != "" && port != "") print id, port, (spareof == "" ? "-" : spareof);
-            id=""; port=""; spareof=""; next
-        }
-        /"id"[[:space:]]*:/ { id=$0; sub(/^.*"id"[[:space:]]*:[[:space:]]*"/,"",id); sub(/".*$/,"",id) }
-        /"port"[[:space:]]*:/ && port == "" { port=$0; sub(/^.*"port"[[:space:]]*:[[:space:]]*/,"",port); sub(/[^0-9].*$/,"",port) }
-        /"spareOf"[[:space:]]*:/ { spareof=$0; sub(/^.*"spareOf"[[:space:]]*:[[:space:]]*"/,"",spareof); sub(/".*$/,"",spareof) }
-    ' "$INSTANCES_FILE")
-    for _i in 0 1 2 3 4; do
-        _m=${MODES_ALL[$_i]}; _main="${_m}-01"
-        if [ -n "${FILE_PORT[$_main]:-}" ]; then PORT_OF[$_m]=${FILE_PORT[$_main]}; fi
-    done
-    _off="$(sed -n 's/.*"warmSparePortOffset"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$INSTANCES_FILE" | head -n 1)"
-    if [[ "$_off" =~ ^0*[0-9]{1,5}$ ]] && [ $((10#${_off})) -gt 0 ]; then
-        for _m in solo duos trios squads; do SPARE_OF[$_m]=$((10#${_off})); done
-    fi
-    # An explicit spare entry keeps the distance it has from its mode's port.
-    for _sid in "${!FILE_PORT[@]}"; do
-        _of="${FILE_SPAREOF[$_sid]:-}"
-        _m=""
-        case "$_of" in
-            solo-01) _m=solo ;; duos-01) _m=duos ;; trios-01) _m=trios ;; squads-01) _m=squads ;;
-            *) case "$_sid" in
-                   solo-01-spare) _m=solo ;; duos-01-spare) _m=duos ;;
-                   trios-01-spare) _m=trios ;; squads-01-spare) _m=squads ;;
-               esac ;;
-        esac
-        if [ -n "$_m" ] && [ -n "${FILE_PORT[${_m}-01]:-}" ]; then
-            _sp=${FILE_PORT[$_sid]}; _mp=${FILE_PORT[${_m}-01]}
-            SPARE_OF[$_m]=$(( _sp - _mp ))
-        fi
-    done
-fi
-if [ -n "${RV_PORT_BASE:-}" ] || [ -n "${RV_PORTS:-}" ]; then
-    if [ -n "${RV_PORT_BASE:-}" ]; then
-        [[ "$RV_PORT_BASE" =~ ^0*[0-9]{1,5}$ ]] || die "RV_PORT_BASE must be a number from 1 to 65535."
-        _base=$((10#$RV_PORT_BASE))
-        { [ "$_base" -ge 1 ] && [ $((_base + 4)) -le 65535 ]; } || die "RV_PORT_BASE must leave room for 5 modes below 65535."
-        for _i in 0 1 2 3 4; do PORT_OF[${MODES_ALL[$_i]}]=$((_base + _i)); done
-    fi
-    if [ -n "${RV_PORTS:-}" ]; then
-        declare -A GIVEN=()
-        _count=0
-        while IFS= read -r _item; do
-            _item="${_item//[[:space:]]/}"
-            [ -n "$_item" ] || continue
-            [[ "$_item" == *=* ]] || die "RV_PORTS: use <mode>=<port> (for example solo=7777)."
-            _key="${_item%%=*}"; _val="${_item#*=}"; _key="${_key,,}"
-            _mode=""
-            for _m in "${MODES_ALL[@]}"; do
-                [ "$_m" = "$_key" ] && _mode="$_m"
-                [ "${_m}-01" = "$_key" ] && _mode="$_m"
-            done
-            [ -n "$_mode" ] || die "RV_PORTS: unknown mode \"$_key\" (use solo, playground, duos, trios, squads)."
-            [ -z "${GIVEN[$_mode]:-}" ] || die "RV_PORTS: $_mode is given more than once."
-            [[ "$_val" =~ ^0*[0-9]{1,5}$ ]] || die "RV_PORTS: $_mode=$_val is not a port number."
-            _num=$((10#${_val}))
-            { [ "$_num" -ge 1 ] && [ "$_num" -le 65535 ]; } || die "RV_PORTS: $_mode=$_val is outside 1-65535."
-            for _k in "${!GIVEN[@]}"; do
-                [ "${PORT_OF[$_k]}" = "$_num" ] && die "RV_PORTS: port $_num is used for both $_k and $_mode."
-            done
-            GIVEN[$_mode]=1; PORT_OF[$_mode]=$_num; _count=$((_count + 1))
-        done <<< "${RV_PORTS//,/$'\n'}"
-        [ "$_count" -gt 0 ] || die "RV_PORTS lists no <mode>=<port> entries."
-    fi
-    [ -n "${RV_PORT_BASE:-}" ] && ENV_ARGS+=(RV_PORT_BASE="$RV_PORT_BASE")
-    [ -n "${RV_PORTS:-}" ] && ENV_ARGS+=(RV_PORTS="$RV_PORTS")
-fi
-# The supervisor refuses duplicate ports and so does the container: catch them before installing.
-_seen=""
-for _m in "${MODES_ALL[@]}"; do
-    _p=${PORT_OF[$_m]}
-    case " $_seen " in *" $_p "*) die "The game ports have a duplicate: UDP $_p." ;; esac
-    _seen="$_seen $_p"
-done
-for _m in solo duos trios squads; do
-    _p=$(( ${PORT_OF[$_m]} + ${SPARE_OF[$_m]} ))
-    { [ "$_p" -ge 1 ] && [ "$_p" -le 65535 ]; } || die "The warm spare port for $_m would be $_p, outside 1-65535."
-    case " $_seen " in *" $_p "*) die "The warm spare port for $_m (UDP $_p) is also a game port." ;; esac
-    _seen="$_seen $_p"
-done
 
 # ---------------------------------------------------------------- server kind
 if [ "$ALREADY" = 1 ]; then
@@ -321,11 +232,45 @@ else
         [[ "$n" =~ ^[1-5]$ ]] || die "Use the numbers 1 to 5."
         MODES="${MODES:+$MODES,}${MODES_ALL[$((n - 1))]}"
     done
-    COUNT=$(echo "$MODES" | tr ',' '\n' | sort -u | wc -l)
-    [ "$COUNT" -gt "$FIT_KSM" ] && warn "$COUNT modes may be more than this machine can run smoothly. You can switch modes off later."
     ENV_ARGS+=(RV_MODES="$MODES")
+    info "A busy mode can run more than one server (each takes its own port and memory)."
+    ask "More servers of a mode, for example solo=4 (Enter for one each)" "" "${RV_COUNTS:-}"
+    RV_COUNTS="$REPLY"
     echo
 fi
+
+# ---------------------------------------------------------------- game ports
+# The servers and their UDP ports come from the image, by the same rules the container applies when
+# it starts (rv ports): RV_COUNTS, RV_PORT_BASE, RV_PORTS, RV_SPARE_OFFSET and RV_SPARE_PORTS on top
+# of what an existing server's files already say, so a rerun opens the same ports. Nothing is written
+# here; a bad choice stops the installer before anything is started.
+pull_image
+PORT_ENV=()
+for _v in RV_COUNTS RV_PORT_BASE RV_PORTS RV_SPARE_OFFSET RV_SPARE_PORTS; do
+    if [ -n "${!_v:-}" ]; then PORT_ENV+=(-e "$_v=${!_v}"); ENV_ARGS+=("$_v=${!_v}"); fi
+done
+if ! _layout="$($ENGINE run --rm --network none -v "$DATA:/data:Z" "${PORT_ENV[@]}" "$IMAGE" ports 2>&1)"; then
+    die "Game ports: $(echo "$_layout" | tail -n 1)"
+fi
+declare -A SERVER_MODE=() SERVER_PORT=() SERVER_SPARE=()
+SERVER_IDS=()
+while read -r _kind _id _mode _port _spare; do
+    [ "$_kind" = server ] || continue
+    SERVER_IDS+=("$_id"); SERVER_MODE[$_id]=$_mode; SERVER_PORT[$_id]=$_port; SERVER_SPARE[$_id]=$_spare
+done <<< "$_layout"
+[ ${#SERVER_IDS[@]} -gt 0 ] || die "Game ports: the image gave no server list."
+# The servers of the modes this box runs: the modes chosen on a new server, every mode on an
+# existing one (its choice lives in its own files).
+in_modes() { [ -z "${MODES:-}" ] || [[ ",$MODES," == *",$1,"* ]]; }
+COUNT=0
+for _id in "${SERVER_IDS[@]}"; do in_modes "${SERVER_MODE[$_id]}" && COUNT=$((COUNT + 1)); done
+if [ -n "${MODES:-}" ]; then
+    [ "$COUNT" -gt "${FIT_KSM:-5}" ] && warn "$COUNT servers may be more than this machine can run smoothly. You can switch modes off later."
+fi
+_list=""
+for _id in "${SERVER_IDS[@]}"; do in_modes "${SERVER_MODE[$_id]}" && _list="${_list:+$_list, }$_id ${SERVER_PORT[$_id]}"; done
+info "Game servers (UDP): $_list"
+echo
 
 # ---------------------------------------------------------------- Zero Wait
 # Two methods. Server pairs (the default for now): one port, the container forwards it between two
@@ -365,11 +310,8 @@ if true; then
         info "next match. It needs memory for one more server of that mode (about $((EACH / 1000)).$(( (EACH % 1000) / 100 )) GB)."
         if [ "$METHOD" = spare ]; then
             _hint=""
-            for _i in 0 1 2 3 4; do
-                _m=${MODES_ALL[$_i]}
-                case "$_m" in solo|duos|trios|squads)
-                    _hint="${_hint:+$_hint, }${MODE_LABEL[$_i]} $(( ${PORT_OF[$_m]} + ${SPARE_OF[$_m]} ))" ;;
-                esac
+            for _id in "${SERVER_IDS[@]}"; do
+                [ "${SERVER_SPARE[$_id]}" != - ] && in_modes "${SERVER_MODE[$_id]}" && _hint="${_hint:+$_hint, }$_id ${SERVER_SPARE[$_id]}"
             done
             info "With the warm spare method that server's port must also be open: ${_hint}."
         fi
@@ -429,21 +371,21 @@ USE_WEB=1; yesno "Turn on the web admin page?" "y" "$(onoff "${RV_WEBUI:-}")" ||
 echo
 
 # ---------------------------------------------------------------- firewall
-# The ports this box uses: the modes chosen on a new server, every mode on an existing one (its
-# choice lives in its own files), and the warm spares only with the warm spare method.
-FW_MODES=()
-if [ -n "${MODES:-}" ]; then IFS=, read -r -a FW_MODES <<< "$MODES"; else FW_MODES=("${MODES_ALL[@]}"); fi
+# The ports this box uses: every server of the modes chosen on a new server (of every mode on an
+# existing one, whose choice lives in its own files), and the warm spares only with the warm spare
+# method, for each server of the Zero Wait modes.
 MAIN_PORTS=()
-for _m in "${FW_MODES[@]}"; do [ -n "${PORT_OF[$_m]:-}" ] && MAIN_PORTS+=("${PORT_OF[$_m]}"); done
+for _id in "${SERVER_IDS[@]}"; do in_modes "${SERVER_MODE[$_id]}" && MAIN_PORTS+=("${SERVER_PORT[$_id]}"); done
 if [ ${#MAIN_PORTS[@]} -gt 0 ]; then
     mapfile -t MAIN_PORTS < <(printf '%s\n' "${MAIN_PORTS[@]}" | sort -n -u)
 fi
 MAIN_TEXT="$(join_list ', ' "${MAIN_PORTS[@]}")"
 SPARE_PORTS=()
 if [ "$METHOD" = spare ]; then
-    if [ -n "${SWAP:-}" ]; then IFS=, read -r -a _swap <<< "$SWAP"; else _swap=(solo duos trios squads); fi
-    for _m in "${_swap[@]}"; do
-        case "$_m" in solo|duos|trios|squads) SPARE_PORTS+=($(( ${PORT_OF[$_m]} + ${SPARE_OF[$_m]} ))) ;; esac
+    _swap_modes="${SWAP:-solo,duos,trios,squads}"
+    for _id in "${SERVER_IDS[@]}"; do
+        _m=${SERVER_MODE[$_id]}
+        [ "${SERVER_SPARE[$_id]}" != - ] && [[ ",$_swap_modes," == *",$_m,"* ]] && SPARE_PORTS+=("${SERVER_SPARE[$_id]}")
     done
     if [ ${#SPARE_PORTS[@]} -gt 0 ]; then
         mapfile -t SPARE_PORTS < <(printf '%s\n' "${SPARE_PORTS[@]}" | sort -n -u)
@@ -478,11 +420,7 @@ bold "11. Starting the server"
 [ "$USE_WEB" = 0 ] && ENV_ARGS+=(RV_WEBUI=off)
 [ "$WEB_PORT" != 8080 ] && ENV_ARGS+=(RV_WEBUI_PORT="$WEB_PORT")
 
-info "Downloading the server image (about 800 MB)..."
-if ! $ENGINE pull -q "$IMAGE" >/dev/null 2>&1; then
-    $ENGINE image inspect "$IMAGE" >/dev/null 2>&1 || die "Could not download $IMAGE. Check the internet connection and try again."
-    warn "Could not download a newer image; using the one already on this machine."
-fi
+pull_image
 $ENGINE rm -f "$NAME" >/dev/null 2>&1 || true
 
 QUADLET=""

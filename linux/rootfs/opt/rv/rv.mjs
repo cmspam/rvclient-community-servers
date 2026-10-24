@@ -9,7 +9,7 @@
 import net from 'node:net';
 import { rmSync, chmodSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { ensureDirs, isConfigured, readState, updateState, MODES, SPARE_MODE_KEYS, setKitWarmSpare, applyPortOverrideFromEnv } from './lib.mjs';
+import { ensureDirs, isConfigured, readState, updateState, MODES, setKitWarmSpare, applyPortOverrideFromEnv } from './lib.mjs';
 import { runSetup, optionsFromEnv, detectPublicIp, REGIONS } from './setup.mjs';
 import { createManager } from './manager.mjs';
 import { CONTROL_SOCK, applySettingDefaults, admin, control } from './ops.mjs';
@@ -129,7 +129,7 @@ async function run() {
 
     async function startServers() {
         const ports = applyPortOverrideFromEnv(msg => log(`[ports] ${msg}`));
-        if (ports) log(`[ports] ${MODES.map(m => `${m.key} ${ports.ports[m.key]}/udp`).join(', ')}; warm spare ${SPARE_MODE_KEYS.map(k => `${k} ${ports.spares[k]}/udp`).join(', ')}`);
+        if (ports) log(`[ports] ${ports.servers.map(x => `${x.id} ${x.port}${x.sparePort !== undefined ? ` (spare ${x.sparePort})` : ''}`).join(', ')}`);
         const p = zeroWaitPlan();
         seedTransition(p.kind);
         reportPlan(p);
@@ -344,6 +344,7 @@ try {
         resetPassword('reset');
         console.log('Log in with the new password (no restart needed).');
     }
+    else if (cmd === 'ports') await import('./ports.mjs');   // the installer: servers and ports, nothing written
     else if (cmd === 'help' || cmd === '--help') console.log(HELP);
     else await runCommand(process.argv.slice(2));
 } catch (e) {

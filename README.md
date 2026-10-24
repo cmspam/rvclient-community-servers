@@ -163,8 +163,11 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_SETUP_CODE` | private: setup code from the launcher |
 | `RV_NAME` | server name |
 | `RV_MODES` | any of `solo,playground,duos,trios,squads`, or `all` |
-| `RV_PORT_BASE` | first game port: the modes get it and the next four, in the order `solo,playground,duos,trios,squads` (Linux; see [Ports](#ports)) |
-| `RV_PORTS` | one port per mode, e.g. `solo=8000,duos=8001`; wins over `RV_PORT_BASE` for the mode it names (Linux) |
+| `RV_COUNTS` | several servers of a mode, e.g. `solo=4` (solo-01 to solo-04, each on its own port; Linux; see [Ports](#ports)) |
+| `RV_PORT_BASE` | first game port: every server gets the next one, in the order `solo,playground,duos,trios,squads` (Linux) |
+| `RV_PORTS` | a port per mode or per server, e.g. `solo=8000,solo-02=8010`; wins over `RV_PORT_BASE` (Linux) |
+| `RV_SPARE_OFFSET` | a warm spare is its server's port + this (100 by default; Linux) |
+| `RV_SPARE_PORTS` | a warm spare port per mode or per server, e.g. `solo=9100` (Linux) |
 | `RV_PUBLIC_IP` | address players connect to (detected if empty) |
 | `RV_PUBLIC_IPS` | additional addresses players can connect to, comma separated (IPv4 or IPv6, up to 7 more) |
 | `RV_REGION` | e.g. `ap-northeast-1` (measured by ping if empty) |
@@ -507,30 +510,41 @@ around a bot outside the ring), `SweatyBotsClimbStopPath` (the earlier climb beh
 | Zero Wait warm spare method (kit 2026.10.10.2+) | the mode's spare port, by default its port + 100: 7877, 7879, 7880, 7881/udp |
 | Linux web admin page | 8080/tcp (only for you) |
 
-Only the modes you run need their port, and a spare's port only with the warm spare method and Zero Wait on for that mode. Community servers must be reachable from the internet on these
+Only the modes you run need their port (every server's port, for a mode with several), and a spare's port only with the warm spare method and Zero Wait on for that mode. Community servers must be reachable from the internet on these
 ports; open them in your provider's firewall too.
 
-### Changing the game ports (Linux)
+### Changing the game ports and running more servers (Linux)
 
-The Linux installer and container take the game ports from the server kit's `ds-instances.json`.
-Two environment variables change them. With neither set, the file keeps its ports (7777-7781 on a
-new server).
+The Linux installer and container take the servers and their ports from the server kit's
+`ds-instances.json`. Five environment variables change them; with none set, the file keeps what it
+has (one server per mode on 7777-7781 on a new server). The server kit's own Windows setup takes
+the same choices as flags (`--count`, `--port-base`, `--ports`, `--spare-offset`, `--spare-ports`).
 
-- `RV_PORT_BASE=<first port>` gives solo, playground, duos, trios and squads that port and the next
-  four, in that order. For example, `RV_PORT_BASE=8000` gives 8000, 8001, 8002, 8003 and 8004.
-- `RV_PORTS=<mode>=<port>,...` names a port per mode and wins over `RV_PORT_BASE` for the mode it
-  names. For example, `RV_PORTS=solo=9000,duos=9001`.
+- `RV_COUNTS=<mode>=<count>,...` runs several servers of a mode, for a mode with more players than
+  one match holds. `RV_COUNTS=solo=4` runs solo-01, solo-02, solo-03 and solo-04. Each is its own
+  server to matchmaking, on its own port and with its own warm spare, and all of them read the
+  mode's `Config.<mode>.ini`, so a setting changed there applies to every one. A lower count
+  removes the extra servers again.
+- `RV_PORT_BASE=<first port>` gives every server the next port, in the order solo, playground,
+  duos, trios, squads. For example, `RV_PORT_BASE=8000` gives 8000 to 8004 with one server each.
+- `RV_PORTS=<mode or server>=<port>,...` names a port per mode (its first server) or per server id
+  and wins over `RV_PORT_BASE`. For example, `RV_PORTS=solo=9000,solo-02=9001`.
+- `RV_SPARE_OFFSET=<n>` places every warm spare at its server's port + n.
+- `RV_SPARE_PORTS=<mode or server>=<port>,...` names a warm spare port per mode or server id and
+  wins over the offset.
 
-Both work with the installer (`sudo RV_PORT_BASE=8000 bash install.sh`) and as container variables
-(`-e RV_PORTS=solo=9000,duos=9001`). They are checked before anything is installed or started: each
-port must be 1-65535, no two modes may share a port, and a warm spare may not land on another
-mode's port. The container writes the result into `ds-instances.json`, the mode entries and any
-spare entries the file has, before the supervisor starts.
+A server that is not named keeps the port it has, and an extra server of a mode takes the next free
+port above the others, with room for its spare. They work with the installer (`sudo RV_COUNTS=solo=4
+bash install.sh`, or the installer's own question) and as container variables (`-e RV_COUNTS=solo=4`),
+and `rv ports` shows the result. They are checked before anything is installed or started: each
+port must be 1-65535, and no two servers or spares may share a port or take one another instance in
+the file uses. The container writes the result into `ds-instances.json` before the supervisor starts.
 
-The warm spares follow the mode's spare offset: the file's `warmSparePortOffset` (100 by default),
-or, where the file names a spare entry, the distance that entry has from its mode's port. So
-`RV_PORT_BASE=8000` on a standard kit gives spares 8100, 8102, 8103 and 8104; with the default
-ports they are 7877, 7879, 7880 and 7881.
+A moved server takes its warm spare along at the same distance; otherwise a spare is its server's
+port + the file's `warmSparePortOffset` (100 by default). So `RV_PORT_BASE=8000` on a standard kit
+gives spares 8100, 8102, 8103 and 8104; with the default ports they are 7877, 7879, 7880 and 7881.
+Server pairs (the Zero Wait method that switches one port between two servers) are for a mode with
+one server; a mode that runs several uses the warm spare method, which gives each server its own.
 
 A server behind NAT must forward the same UDP ports to it, main ports and warm spare ports alike.
 The installer, when run as root, opens the ports it will use in the local firewall (firewalld or
