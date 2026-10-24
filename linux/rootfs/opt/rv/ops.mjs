@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import net from 'node:net';
 import os from 'node:os';
 import { DATA, INSTANCES, SUP_DIR, WIN64, LOGS, SETUP_LOG, STATE_DIR, MODES, SPARE_MODE_KEYS, readJson, writeJson, readState, updateState, isConfigured, kitVersion,
-    readIni, setIniValues, gameProcesses, modePort, sparePort, sparePorts, spareOffset } from './lib.mjs';
+    readIni, setIniValues, gameProcesses, modePort, sparePort, sparePorts, spareOffset, serverIds, serverCount, serverTarget, serverPorts } from './lib.mjs';
 
 export const CONTROL_SOCK = join(STATE_DIR, 'control.sock');
 
@@ -204,6 +204,9 @@ export async function instances() {
         const p = procs.find(x => x.instance === i.id);
         i.rssMb = p?.rssMb ?? null; i.swapMb = p?.swapMb ?? null;
         i.label = MODES.find(m => m.key === i.mode)?.label || i.mode;
+        // Several servers of one mode: Solos, Solos 2, ... by their id (solo-02).
+        const nth = Number(/-(\d+)$/.exec(i.id)?.[1]);
+        if (nth > 1) i.label = `${i.label} ${nth}`;
         if (!Number.isInteger(i.port)) i.port = modePort(i.mode, inst);
         i.modeOn = modes[i.mode] !== false;
         i.state = stateLabel(i);
@@ -244,19 +247,23 @@ export function system() {
 }
 
 // ---- actions ----
-const resolveId = target => {
-    const m = MODES.find(x => x.key === target || x.id === target);
-    if (!m) throw new Error(`Unknown mode "${target}" (solo, playground, duos, trios, squads).`);
-    return m;
+// A mode key (solo: every Solos server) or a server id (solo-02: that one).
+const resolveTarget = target => {
+    const t = serverTarget(target);
+    if (!t) throw new Error(`Unknown mode or server "${target}" (solo, playground, duos, trios, squads, or a server id such as solo-02).`);
+    return t;
 };
 
 export async function instanceAction(target, action) {
     if (!['start', 'stop', 'restart'].includes(action)) throw new Error('action must be start, stop or restart');
-    if ((readState().pairedModes || []).includes(resolveId(target).key)) {
-        if (action === 'restart' && restartActive(resolveId(target).key)) return { success: true, message: 'restarting the active server of the pair (the waiting one takes over)' };
-        throw new Error(`${resolveId(target).label} runs as a server pair (RV_SWAP): it can only be restarted here.`);
+    const { mode, ids } = resolveTarget(target);
+    if ((readState().pairedModes || []).includes(mode.key)) {
+        if (action === 'restart' && restartActive(mode.key)) return { success: true, message: 'restarting the active server of the pair (the waiting one takes over)' };
+        throw new Error(`${mode.label} runs as a server pair (RV_SWAP): it can only be restarted here.`);
     }
-    return admin(`/instances/${resolveId(target).id}/${action}`, 'POST');
+    let last = null;
+    for (const id of ids) last = await admin(`/instances/${id}/${action}`, 'POST');
+    return ids.length > 1 ? { success: true, message: `${action}: ${ids.join(', ')}` } : last;
 }
 
 export async function restartAll() {
@@ -272,7 +279,7 @@ export async function restartAll() {
 // Same as the supervisor's own setMode(): change modes.json, which it re-reads every 5 seconds.
 // Off: an empty server stops at once; one with players closes after its current match.
 export function setMode(mode, on) {
-    const m = resolveId(mode);
+    const m = resolveTarget(mode).mode;
     const f = modesFile();
     const obj = readJson(f, {});
     obj[m.key] = on === true;
@@ -281,7 +288,7 @@ export function setMode(mode, on) {
 }
 
 function configFile(mode) {
-    const m = resolveId(mode);
+    const m = resolveTarget(mode).mode;   // the servers of a mode share its file
     const file = join(WIN64, `Config.${m.key}.ini`);
     if (!existsSync(file)) throw new Error(`Config.${m.key}.ini not found (is the server set up?)`);
     return { m, file };
@@ -342,8 +349,9 @@ export async function saveSettings(mode, values, { restart = false } = {}) {
         return restart ? 'Saved - the active server of the pair is restarting (the waiting one takes over and gets the settings at its next start).'
             : 'Saved - each server of the pair uses the new settings from its next start (after its next match).';
     }
-    if (restart) await admin(`/instances/${m.id}/restart`, 'POST');
-    return restart ? 'Saved - the server is restarting with the new settings.'
+    // Every server of the mode reads this file.
+    if (restart) for (const id of serverIds(m.key)) await admin(`/instances/${id}/restart`, 'POST');
+    return restart ? `Saved - ${serverCount(m.key) > 1 ? 'the servers are' : 'the server is'} restarting with the new settings.`
         : 'Saved - takes effect when the server next restarts (BR modes restart after every match).';
 }
 
@@ -355,11 +363,14 @@ export function pairsInfo() {
     const inst = readJson(INSTANCES, null);
     const spareKey = modes.find(k => SPARE_MODE_KEYS.includes(k)) || SPARE_MODE_KEYS[0];
     return { ...a, requestedNow: requestedMethod(), available: a.kind !== 'none', portOffset: spareOffset(spareKey, inst),
-        sparePorts: sparePorts(inst), modes };
+        sparePorts: sparePorts(inst), modes,
+        // Every server's spare port, by mode: a mode with several servers has one spare each.
+        spareServerPorts: serverPorts(inst).filter(x => x.sparePort !== undefined)
+            .reduce((o, x) => ({ ...o, [x.key]: [...(o[x.key] || []), x.sparePort] }), {}) };
 }
 export const setPair = (mode, on) => {
     const kind = pairsInfo().kind;
-    if (kind === 'spare') return setWarmSpare(resolveId(mode).key, on);
+    if (kind === 'spare') return setWarmSpare(resolveTarget(mode).mode.key, on);
     if (kind === 'pairs') return setSwapMode(mode, on);
     throw new Error('Zero Wait is not running on this server (the status page says why).');
 };
@@ -389,9 +400,10 @@ export function logFile(which) {
     if (which === 'supervisor') return join(LOGS, 'supervisor.log');
     if (which === 'setup') return SETUP_LOG;
     const spare = /-spare$/.test(which || ''), base = spare ? which.slice(0, -6) : which;
-    const m = MODES.find(x => x.key === base || x.id === base);
-    if (m) return join(LOGS, 'game', `server-${m.id}${spare ? '-spare' : ''}.log`);
-    throw new Error('Unknown log (supervisor, setup, a mode name, or <mode>-spare).');
+    // A mode name is its first server; a server id (solo-02) is that server.
+    const t = serverTarget(base);
+    if (t) return join(LOGS, 'game', `server-${t.ids[0]}${spare ? '-spare' : ''}.log`);
+    throw new Error('Unknown log (supervisor, setup, a mode name or server id, or <name>-spare).');
 }
 
 export function tail(file, maxLines = 200) {
