@@ -318,8 +318,10 @@ Deathmatch and Possession run on an ordinary Solos server:
   `"matchConfig": "possession-solo"` to its entry in `ds-instances.json`, under
   `server/Rumbleverse/Binaries/Win64/RVSupervisor/`.
 - The backend needs `RVCOZMO_DIRECT_MODES=1`.
-- Players join the server from the community server browser. The stock game mode screen has no
-  Deathmatch or Possession tile, so they are not selectable there yet.
+- Players reach the mode through matchmaking. The stock game mode screen has no Deathmatch or
+  Possession tile, and the in-game Servers tab and the launcher's server page do not queue these
+  two configs yet, so the player-facing selection is still to be added. For a test server,
+  `RequireMatchmadeJoin=false` in the mode's config allows a direct join with the game console.
 
 The container's `rv status` and `rv mode` list the five standard modes. A custom instance added to
 `ds-instances.json` is started by the kit supervisor but is not shown in that table.
