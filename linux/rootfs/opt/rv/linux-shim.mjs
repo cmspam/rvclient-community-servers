@@ -14,7 +14,8 @@
 //
 // Game servers start at the lowest CPU priority until they are joinable (bootnice.mjs).
 //
-// Each game server start is also watched until it is joinable (watchdog.mjs).
+// Each game server is watched for its whole life: a start that hangs, and an engine that stops
+// after it was joinable (watchdog.mjs).
 //
 // Before each game start the engine config is written so the island loads once: the engine starts
 // on the small SheikEntry map with the battle royale mode, and Server.dll loads at 5 seconds.
@@ -29,7 +30,7 @@ import { readState, readJson, writeJson, MODES, DATA, INSTANCES, SUP_DIR } from 
 import { applyAddons } from './addons.mjs';
 import { applyMapOnceConfig } from './maponce.mjs';
 import { lowPriorityPrefix, normalPriorityWhenJoinable } from './bootnice.mjs';
-import { watchBoot } from './watchdog.mjs';
+import { watchGameServer } from './watchdog.mjs';
 
 const WINE = process.env.RV_WINE || 'wine';
 // RV_KSM=on: start through rv-ksm, which marks the game server's memory as mergeable, so the
@@ -48,7 +49,7 @@ function viaWine(fn) {
         // nice 19 until joinable (bootnice.mjs), then rv-ksm (RV_KSM), then Wine.
         const run = [...lowPriorityPrefix(), ...(KSM ? ['rv-ksm'] : []), WINE, cmd, ...args];
         const child = fn.call(this, run[0], run.slice(1), ...rest);
-        if (fn === originalSpawn) { normalPriorityWhenJoinable(cmd, args, child); watchBoot(cmd, args, child); }
+        if (fn === originalSpawn) { normalPriorityWhenJoinable(cmd, args, child); watchGameServer(cmd, args, child); }
         return child;
     };
 }

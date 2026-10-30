@@ -186,9 +186,10 @@ To skip the form, add the answers to the command before the image name, for exam
 | `RV_SWAP_UPLOAD_WAIT_SEC` | server pairs: wait this long after the last match report was queued for the upload confirmation (default `20`) |
 | `RV_SWAP_ROUND_END_QUIET_SEC` | server pairs: swap this long after the round when no match reports are queued (default `6`) |
 | `RV_BOOT_NICE` | `off` = game servers start at the normal CPU priority (default: lowest until joinable) |
-| `RV_BOOT_WATCHDOG` | `off` = do not end a game server start that froze or stalled (default `on`) |
-| `RV_BOOT_FROZEN_SEC` | a start whose process is stopped this long is ended and started again (default `15`) |
+| `RV_BOOT_WATCHDOG` | `off` = do not end a game server that froze or stopped making progress (default `on`) |
+| `RV_BOOT_FROZEN_SEC` | a game server whose process is stopped this long is ended and started again (default `15`) |
 | `RV_BOOT_STALL_SEC` | a start whose log gets no new lines for this long is ended and started again (default `150`) |
+| `RV_RUN_STALL_SEC` | a joinable server whose game thread uses no CPU for this long is ended and started again (default `120`; `0` = off) |
 | `RV_WARM_SPARE_MIN_FREE_MB` | free memory a Zero Wait spare needs to start (default 2500) |
 | `RV_NODE_ID`, `RV_NODE_KEY` | move an existing registration to this machine |
 
@@ -606,10 +607,13 @@ sudo rm -rf /srv/rvserver          # deletes the server's files and registration
 - **Private server: setup code refused.** Codes are valid for 30 minutes; get a new one in the launcher.
 - **Not enough memory.** Switch modes off (web page, `rv mode <mode> off`, or rV Modes on Windows), or use
   memory sharing on Linux.
-- **A mode stays "starting" for minutes.** The container watches every start until the kit reports the
-  server joinable: a process stopped for 15 s, or a log with no new lines for 150 s, is ended so the
-  supervisor starts it again (a start that hangs usually never finishes). `RV_BOOT_FROZEN_SEC` and
-  `RV_BOOT_STALL_SEC` change the two times, `RV_BOOT_WATCHDOG=off` turns the watching off.
+- **A mode stays "starting" for minutes, or is up but nobody can join it.** The container watches
+  every game server for its whole life: a process stopped for 15 s, or a start whose log gets no new
+  lines for 150 s, is ended so the supervisor starts it again. After the kit reports the server
+  joinable, the engine's game thread must keep using CPU; a crash that leaves the process and its
+  keepalive heartbeat running is ended after 120 s without it. `RV_BOOT_FROZEN_SEC`,
+  `RV_BOOT_STALL_SEC` and `RV_RUN_STALL_SEC` change the three times, `RV_BOOT_WATCHDOG=off` turns
+  the watching off.
 
 Questions? Ask in the rVclient Discord.
 
